@@ -1,0 +1,15 @@
+.env
+node_modules/
+npm-debug.log*
+package-lock.json.bak
+.DS_Store
+
+# Local runtime files
+dev.log
+dev.pid
+
+# Generated/exported local artifacts
+john_raw.txt
+
+# Optional editor/system files
+.vscode/

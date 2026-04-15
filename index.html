@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>John NIV Memory Builder</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="auth-overlay" class="auth-overlay">
+      <form id="auth-form" class="auth-card">
+        <p class="section-label">Sign In</p>
+        <h2>Start Memorizing John</h2>
+        <p class="muted">
+          Enter your name and email once. Your name will be used on the leaderboard.
+        </p>
+        <label class="field">
+          <span>Name</span>
+          <input id="auth-name" type="text" required />
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input id="auth-email" type="email" required />
+        </label>
+        <p id="auth-error" class="answer-meta incorrect"></p>
+        <button type="submit">Enter</button>
+      </form>
+    </div>
+
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">Memorize John</p>
+        <h1>John NIV Fill-In Quiz</h1>
+      </div>
+      <div class="header-side">
+        <p class="header-copy">
+          Almost every word is hidden. Type each missing word, check it
+          immediately, and build a record of where John is easiest or hardest for
+          you.
+        </p>
+        <div class="user-chip">
+          <strong id="user-name">Not signed in</strong>
+          <button id="sign-out" class="secondary-button" type="button">Sign out</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar card">
+        <div class="sidebar-heading">
+          <h2>Chapters</h2>
+          <p id="db-status" class="muted">Checking database status...</p>
+        </div>
+        <div id="chapter-list" class="chapter-list"></div>
+      </aside>
+
+      <section class="content">
+        <section class="hero card">
+          <div>
+            <p class="section-label">Overview</p>
+            <h2 id="scope-title">John 1</h2>
+          </div>
+          <div class="overall-progress">
+            <div class="overall-progress-copy">
+              <span id="overall-progress-label">Overall progress</span>
+              <strong id="overall-progress-value">0%</strong>
+            </div>
+            <div class="overall-progress-track">
+              <div id="overall-progress-fill" class="overall-progress-fill"></div>
+            </div>
+          </div>
+          <div id="stats" class="stats"></div>
+        </section>
+
+        <section class="grid">
+          <article class="card insights-card">
+            <div class="section-heading">
+              <div>
+                <p class="section-label">Leaderboard</p>
+                <h2 id="leaderboard-title">Extreme Leaderboard</h2>
+              </div>
+            </div>
+            <div id="leaderboard" class="recommendations"></div>
+          </article>
+
+          <article class="card controls-card">
+            <div class="section-heading">
+              <div>
+                <p class="section-label">Recommendations</p>
+                <h2>Where To Focus</h2>
+              </div>
+            </div>
+            <div id="recommendations" class="recommendations"></div>
+          </article>
+        </section>
+
+        <article class="card chapter-card">
+          <div class="section-heading">
+            <div>
+              <p class="section-label">Quiz</p>
+              <h2 id="chapter-title">Chapter 1</h2>
+            </div>
+            <p id="chapter-summary" class="muted"></p>
+          </div>
+          <div class="quiz-toolbar">
+            <label class="field">
+              <span>Difficulty</span>
+              <select id="difficulty-select">
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="hard">Hard</option>
+                <option value="difficult">Difficult</option>
+                <option value="extreme">Extreme</option>
+              </select>
+            </label>
+            <div class="field">
+              <span>Chapter reset</span>
+              <button id="reset-chapter" class="secondary-button" type="button">
+                Reset this chapter
+              </button>
+            </div>
+          </div>
+
+          <div id="chapter-quiz" class="chapter-quiz"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="./data/john-quiz-data.js"></script>
+    <script src="./script.js"></script>
+  </body>
+</html>

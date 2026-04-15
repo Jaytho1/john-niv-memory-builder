@@ -1,0 +1,545 @@
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { createReadStream, existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Pool } from "pg";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function loadEnvFile() {
+  const envPath = path.join(__dirname, ".env");
+  if (!existsSync(envPath)) {
+    return;
+  }
+
+  const raw = await readFile(envPath, "utf8");
+  raw.split("\n").forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      return;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) {
+      return;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim();
+
+    if (!(key in process.env)) {
+      process.env[key] = value;
+    }
+  });
+}
+
+await loadEnvFile();
+
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "127.0.0.1";
+
+const staticTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+};
+
+const memoryAttempts = new Map();
+
+let pool = null;
+let dbConnected = false;
+
+if (process.env.DATABASE_URL) {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: false },
+  });
+}
+
+async function initDb() {
+  if (!pool) {
+    return;
+  }
+
+  await pool.query(`
+    create table if not exists users (
+      id bigserial primary key,
+      name text not null,
+      email text not null unique,
+      created_at timestamptz not null default now()
+    );
+  `);
+
+  await pool.query(`
+    create table if not exists word_attempts (
+      id bigserial primary key,
+      user_id bigint references users(id),
+      difficulty text,
+      chapter_id integer not null,
+      verse_id integer not null,
+      token_index integer not null,
+      expected_word text not null,
+      answer text not null,
+      is_correct boolean not null,
+      created_at timestamptz not null default now()
+    );
+  `);
+
+  await pool.query(`
+    alter table word_attempts
+      add column if not exists user_id bigint references users(id);
+  `);
+  await pool.query(`
+    alter table word_attempts
+      add column if not exists difficulty text;
+  `);
+
+  await pool.query(`
+    create table if not exists solved_words (
+      id bigserial primary key,
+      user_id bigint not null references users(id),
+      difficulty text not null,
+      chapter_id integer not null,
+      verse_id integer not null,
+      token_index integer not null,
+      expected_word text not null,
+      created_at timestamptz not null default now(),
+      unique (user_id, difficulty, chapter_id, verse_id, token_index, expected_word)
+    );
+  `);
+
+  dbConnected = true;
+}
+
+function sendJson(response, statusCode, payload) {
+  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(payload));
+}
+
+async function readJsonBody(request) {
+  let raw = "";
+  for await (const chunk of request) {
+    raw += chunk;
+  }
+  return raw ? JSON.parse(raw) : {};
+}
+
+function rememberAttempt(attempt) {
+  const key = `${attempt.chapterId}:${attempt.verseId}:${attempt.tokenIndex}:${attempt.expectedWord}`;
+  const current = memoryAttempts.get(key) || [];
+  current.push(attempt);
+  memoryAttempts.set(key, current);
+}
+
+function buildAttemptStats(correctCount, attemptCount) {
+  const correctPercentage = attemptCount
+    ? Math.round((correctCount / attemptCount) * 100)
+    : 0;
+
+  return {
+    correctCount,
+    attemptCount,
+    correctPercentage,
+    incorrectPercentage: attemptCount ? 100 - correctPercentage : 0,
+  };
+}
+
+function getMemorySummary() {
+  const chapterStats = new Map();
+
+  for (const [key, attempts] of memoryAttempts.entries()) {
+    const [chapterId, verseId] = key.split(":").map((value) => Number(value));
+    const stats = chapterStats.get(chapterId) || {
+      chapterId,
+      attempts: 0,
+      correct: 0,
+      correctWords: new Set(),
+      verseStats: new Map(),
+    };
+
+    attempts.forEach((attempt) => {
+      stats.attempts += 1;
+      if (attempt.isCorrect) {
+        stats.correct += 1;
+        stats.correctWords.add(key);
+      }
+
+      const verse = stats.verseStats.get(verseId) || { verseId, attempts: 0, correct: 0 };
+      verse.attempts += 1;
+      if (attempt.isCorrect) {
+        verse.correct += 1;
+      }
+      stats.verseStats.set(verseId, verse);
+    });
+
+    chapterStats.set(chapterId, stats);
+  }
+
+  return [...chapterStats.values()]
+    .map((stats) => {
+      const hardestVerseEntry = [...stats.verseStats.values()]
+        .filter((verse) => verse.attempts > 0)
+        .sort((a, b) => a.correct / a.attempts - b.correct / b.attempts || b.attempts - a.attempts)[0];
+
+      return {
+        chapterId: stats.chapterId,
+        attempts: stats.attempts,
+        accuracy: stats.attempts ? Math.round((stats.correct / stats.attempts) * 100) : 0,
+        correctUniqueWords: stats.correctWords.size,
+        hardestVerse: hardestVerseEntry?.verseId ?? null,
+      };
+    })
+    .sort((a, b) => a.chapterId - b.chapterId);
+}
+
+async function getDbSummary(userId) {
+  const chapterQuery = await pool.query(`
+    select
+      chapter_id,
+      count(*)::int as attempts,
+      count(*) filter (where is_correct)::int as correct,
+      count(distinct concat(chapter_id, ':', verse_id, ':', token_index, ':', expected_word))
+        filter (where is_correct)::int as correct_unique_words
+    from word_attempts
+    where user_id = $1
+    group by chapter_id
+    order by chapter_id;
+  `, [userId]);
+
+  const hardestVerseQuery = await pool.query(`
+    with verse_stats as (
+      select
+        chapter_id,
+        verse_id,
+        count(*)::int as attempts,
+        count(*) filter (where is_correct)::int as correct,
+        row_number() over (
+          partition by chapter_id
+          order by
+            (count(*) filter (where is_correct))::float / nullif(count(*), 0) asc,
+            count(*) desc,
+            verse_id asc
+        ) as ranking
+      from word_attempts
+      where user_id = $1
+      group by chapter_id, verse_id
+    )
+    select chapter_id, verse_id
+    from verse_stats
+    where ranking = 1;
+  `, [userId]);
+
+  const hardestVerseByChapter = new Map(
+    hardestVerseQuery.rows.map((row) => [Number(row.chapter_id), Number(row.verse_id)])
+  );
+
+  return chapterQuery.rows.map((row) => ({
+    chapterId: Number(row.chapter_id),
+    attempts: Number(row.attempts),
+    accuracy: row.attempts ? Math.round((Number(row.correct) / Number(row.attempts)) * 100) : 0,
+    correctUniqueWords: Number(row.correct_unique_words),
+    hardestVerse: hardestVerseByChapter.get(Number(row.chapter_id)) ?? null,
+  }));
+}
+
+async function handleLogin(request, response) {
+  const body = await readJsonBody(request);
+  const name = String(body.name || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
+
+  if (!name || !email) {
+    sendJson(response, 400, { error: "Name and email are required." });
+    return;
+  }
+
+  const existing = await pool.query(
+    `select id, name, email from users where email = $1 limit 1;`,
+    [email]
+  );
+
+  if (existing.rows.length) {
+    sendJson(response, 200, { user: {
+      id: Number(existing.rows[0].id),
+      name: existing.rows[0].name,
+      email: existing.rows[0].email,
+    } });
+    return;
+  }
+
+  const inserted = await pool.query(
+    `insert into users (name, email) values ($1, $2) returning id, name, email;`,
+    [name, email]
+  );
+
+  sendJson(response, 200, { user: {
+    id: Number(inserted.rows[0].id),
+    name: inserted.rows[0].name,
+    email: inserted.rows[0].email,
+  } });
+}
+
+async function handleUserProgress(request, response, url) {
+  const userId = Number(url.searchParams.get("userId"));
+  const difficulty = String(url.searchParams.get("difficulty") || "");
+
+  if (!userId || !difficulty) {
+    sendJson(response, 400, { error: "Missing userId or difficulty." });
+    return;
+  }
+
+  const result = await pool.query(
+    `
+      select chapter_id, verse_id, token_index, expected_word
+      from solved_words
+      where user_id = $1 and difficulty = $2
+      order by chapter_id, verse_id, token_index;
+    `,
+    [userId, difficulty]
+  );
+
+  sendJson(response, 200, {
+    rows: result.rows.map((row) => ({
+      chapterId: Number(row.chapter_id),
+      verseId: Number(row.verse_id),
+      tokenIndex: Number(row.token_index),
+      expectedWord: row.expected_word,
+    })),
+  });
+}
+
+async function handleLeaderboard(response, url) {
+  const difficulty = String(url.searchParams.get("difficulty") || "");
+  if (!difficulty) {
+    sendJson(response, 400, { error: "Missing difficulty." });
+    return;
+  }
+
+  const result = await pool.query(
+    `
+      with ranked as (
+        select
+          users.id as user_id,
+          users.name,
+          count(solved_words.id)::int as solved_count,
+          dense_rank() over (order by count(solved_words.id) desc, users.name asc) as rank
+        from users
+        left join solved_words
+          on solved_words.user_id = users.id
+         and solved_words.difficulty = $1
+        group by users.id, users.name
+      )
+      select user_id, name, solved_count, rank
+      from ranked
+      where solved_count > 0
+      order by rank asc, name asc
+      limit 12;
+    `,
+    [difficulty]
+  );
+
+  sendJson(response, 200, {
+    db: {
+      configured: Boolean(process.env.DATABASE_URL),
+      connected: dbConnected,
+    },
+    rows: result.rows.map((row) => ({
+      userId: Number(row.user_id),
+      name: row.name,
+      solvedCount: Number(row.solved_count),
+      rank: Number(row.rank),
+    })),
+  });
+}
+
+async function handleAttempt(request, response) {
+  const body = await readJsonBody(request);
+  const userId = Number(body.userId);
+  const difficulty = String(body.difficulty || "").trim().toLowerCase();
+  const expectedWord = String(body.expectedWord || "").trim().toLowerCase();
+  const answer = String(body.answer || "").trim().toLowerCase();
+
+  if (!userId || !difficulty || !expectedWord) {
+    sendJson(response, 400, { error: "Missing userId, difficulty, or expected word." });
+    return;
+  }
+
+  const attempt = {
+    userId,
+    difficulty,
+    chapterId: Number(body.chapterId),
+    verseId: Number(body.verseId),
+    tokenIndex: Number(body.tokenIndex),
+    expectedWord,
+    answer,
+    isCorrect: answer === expectedWord,
+  };
+
+  if (pool && dbConnected) {
+    await pool.query(
+      `
+        insert into word_attempts (user_id, difficulty, chapter_id, verse_id, token_index, expected_word, answer, is_correct)
+        values ($1, $2, $3, $4, $5, $6, $7, $8);
+      `,
+      [
+        attempt.userId,
+        attempt.difficulty,
+        attempt.chapterId,
+        attempt.verseId,
+        attempt.tokenIndex,
+        attempt.expectedWord,
+        attempt.answer,
+        attempt.isCorrect,
+      ]
+    );
+
+    if (attempt.isCorrect) {
+      await pool.query(
+        `
+          insert into solved_words (user_id, difficulty, chapter_id, verse_id, token_index, expected_word)
+          values ($1, $2, $3, $4, $5, $6)
+          on conflict (user_id, difficulty, chapter_id, verse_id, token_index, expected_word) do nothing;
+        `,
+        [
+          attempt.userId,
+          attempt.difficulty,
+          attempt.chapterId,
+          attempt.verseId,
+          attempt.tokenIndex,
+          attempt.expectedWord,
+        ]
+      );
+    }
+
+    const countResult = await pool.query(
+      `
+        select
+          count(*)::int as attempt_count,
+          count(*) filter (where is_correct)::int as correct_count
+        from word_attempts
+        where user_id = $1
+          and difficulty = $2
+          and chapter_id = $3
+          and verse_id = $4
+          and token_index = $5
+          and expected_word = $6
+      ;
+      `,
+      [
+        attempt.userId,
+        attempt.difficulty,
+        attempt.chapterId,
+        attempt.verseId,
+        attempt.tokenIndex,
+        attempt.expectedWord,
+      ]
+    );
+
+    sendJson(response, 200, {
+      ...attempt,
+      ...buildAttemptStats(
+        Number(countResult.rows[0].correct_count),
+        Number(countResult.rows[0].attempt_count)
+      ),
+      dbConnected: true,
+    });
+    return;
+  }
+
+  rememberAttempt(attempt);
+  const key = `${attempt.chapterId}:${attempt.verseId}:${attempt.tokenIndex}:${attempt.expectedWord}`;
+  const attempts = memoryAttempts.get(key) || [];
+  const correctCount = attempts.filter((item) => item.isCorrect).length;
+
+  sendJson(response, 200, {
+    ...attempt,
+    ...buildAttemptStats(correctCount, attempts.length),
+    dbConnected: false,
+  });
+}
+
+async function handleSummary(response, url) {
+  const userId = Number(url.searchParams.get("userId"));
+  const chapters = pool && dbConnected && userId ? await getDbSummary(userId) : getMemorySummary();
+
+  const troubleChapters = [...chapters]
+    .filter((chapter) => chapter.attempts > 0)
+    .sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts)
+    .slice(0, 5);
+
+  sendJson(response, 200, {
+    db: {
+      configured: Boolean(process.env.DATABASE_URL),
+      connected: dbConnected,
+    },
+    chapters,
+    troubleChapters,
+  });
+}
+
+function serveStatic(request, response) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  const requestPath = url.pathname === "/" ? "/index.html" : url.pathname;
+  const safePath = path.normalize(path.join(__dirname, requestPath));
+
+  if (!safePath.startsWith(__dirname) || !existsSync(safePath)) {
+    response.writeHead(404);
+    response.end("Not found");
+    return;
+  }
+
+  const contentType = staticTypes[path.extname(safePath)] || "text/plain; charset=utf-8";
+  response.writeHead(200, { "Content-Type": contentType });
+  createReadStream(safePath).pipe(response);
+}
+
+const server = createServer(async (request, response) => {
+  try {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+
+    if (request.method === "POST" && url.pathname === "/api/login") {
+      await handleLogin(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/user-progress") {
+      await handleUserProgress(request, response, url);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/leaderboard") {
+      await handleLeaderboard(response, url);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/progress/summary") {
+      await handleSummary(response, url);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/attempt") {
+      await handleAttempt(request, response);
+      return;
+    }
+
+    serveStatic(request, response);
+  } catch (error) {
+    sendJson(response, 500, {
+      error: "Server error",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+initDb()
+  .catch((error) => {
+    dbConnected = false;
+    console.error("Database init failed:", error.message);
+  })
+  .finally(() => {
+    server.listen(PORT, HOST, () => {
+      console.log(`John memory app running on http://${HOST}:${PORT}`);
+    });
+  });
