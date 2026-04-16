@@ -47,6 +47,14 @@ const staticTypes = {
   ".json": "application/json; charset=utf-8",
 };
 
+const publicFiles = new Set([
+  "/",
+  "/index.html",
+  "/styles.css",
+  "/script.js",
+  "/data/john-quiz-data.js",
+]);
+
 const memoryAttempts = new Map();
 
 let pool = null;
@@ -115,8 +123,17 @@ async function initDb() {
 }
 
 function sendJson(response, statusCode, payload) {
+  applySecurityHeaders(response);
   response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
+}
+
+function applySecurityHeaders(response) {
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
 }
 
 async function readJsonBody(request) {
@@ -481,16 +498,27 @@ async function handleSummary(response, url) {
 
 function serveStatic(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
-  const requestPath = url.pathname === "/" ? "/index.html" : url.pathname;
-  const safePath = path.normalize(path.join(__dirname, requestPath));
+  const requestPath = url.pathname === "/" ? "/" : url.pathname;
 
-  if (!safePath.startsWith(__dirname) || !existsSync(safePath)) {
+  if (!publicFiles.has(requestPath)) {
+    applySecurityHeaders(response);
+    response.writeHead(404);
+    response.end("Not found");
+    return;
+  }
+
+  const relativePath = requestPath === "/" ? "index.html" : requestPath.slice(1);
+  const safePath = path.join(__dirname, relativePath);
+
+  if (!existsSync(safePath)) {
+    applySecurityHeaders(response);
     response.writeHead(404);
     response.end("Not found");
     return;
   }
 
   const contentType = staticTypes[path.extname(safePath)] || "text/plain; charset=utf-8";
+  applySecurityHeaders(response);
   response.writeHead(200, { "Content-Type": contentType });
   createReadStream(safePath).pipe(response);
 }
@@ -516,6 +544,17 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/api/progress/summary") {
       await handleSummary(response, url);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      sendJson(response, 200, {
+        ok: true,
+        db: {
+          configured: Boolean(process.env.DATABASE_URL),
+          connected: dbConnected,
+        },
+      });
       return;
     }
 

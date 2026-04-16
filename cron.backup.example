@@ -1,0 +1,3 @@
+# Run a nightly PostgreSQL backup at 2:15 AM server time.
+# Replace /path/to/app with your real app directory.
+15 2 * * * cd /path/to/app && /path/to/app/scripts/backup-db.sh >> /path/to/app/backups/backup.log 2>&1

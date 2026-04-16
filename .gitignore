@@ -7,6 +7,10 @@ package-lock.json.bak
 # Local runtime files
 dev.log
 dev.pid
+backups/
+*.dump
+*.dump.gz
+backup.log
 
 # Generated/exported local artifacts
 john_raw.txt
