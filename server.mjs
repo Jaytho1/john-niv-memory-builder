@@ -45,17 +45,22 @@ const staticTypes = {
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
 };
 
 const publicFiles = new Set([
   "/",
   "/index.html",
+  "/cross-favicon.png",
   "/styles.css",
   "/script.js",
   "/data/john-quiz-data.js",
+  "/data/john-quiz-data-ko.js",
 ]);
 
 const memoryAttempts = new Map();
+const memoryUsers = new Map();
+let nextMemoryUserId = 1;
 
 let pool = null;
 let dbConnected = false;
@@ -77,8 +82,14 @@ async function initDb() {
       id bigserial primary key,
       name text not null,
       email text not null unique,
+      preferred_language text not null default 'en',
       created_at timestamptz not null default now()
     );
+  `);
+
+  await pool.query(`
+    alter table users
+      add column if not exists preferred_language text not null default 'en';
   `);
 
   await pool.query(`
@@ -164,10 +175,41 @@ function buildAttemptStats(correctCount, attemptCount) {
   };
 }
 
-function getMemorySummary() {
+function normalizeLanguage(value) {
+  return value === "ko" ? "ko" : "en";
+}
+
+function getOrCreateMemoryUser(name, email, preferredLanguage) {
+  const existing = memoryUsers.get(email);
+  if (existing) {
+    existing.name = name;
+    existing.preferredLanguage = preferredLanguage;
+    return existing;
+  }
+
+  const user = {
+    id: nextMemoryUserId,
+    name,
+    email,
+    preferredLanguage,
+  };
+  nextMemoryUserId += 1;
+  memoryUsers.set(email, user);
+  return user;
+}
+
+function getMemorySummary(difficulty = "") {
   const chapterStats = new Map();
 
   for (const [key, attempts] of memoryAttempts.entries()) {
+    const matchingAttempts = difficulty
+      ? attempts.filter((attempt) => attempt.difficulty === difficulty)
+      : attempts;
+
+    if (!matchingAttempts.length) {
+      continue;
+    }
+
     const [chapterId, verseId] = key.split(":").map((value) => Number(value));
     const stats = chapterStats.get(chapterId) || {
       chapterId,
@@ -177,7 +219,7 @@ function getMemorySummary() {
       verseStats: new Map(),
     };
 
-    attempts.forEach((attempt) => {
+    matchingAttempts.forEach((attempt) => {
       stats.attempts += 1;
       if (attempt.isCorrect) {
         stats.correct += 1;
@@ -212,7 +254,17 @@ function getMemorySummary() {
     .sort((a, b) => a.chapterId - b.chapterId);
 }
 
-async function getDbSummary(userId) {
+async function getDbSummary(userId, difficulty = "") {
+  const filters = ["user_id = $1"];
+  const params = [userId];
+
+  if (difficulty) {
+    params.push(difficulty);
+    filters.push(`difficulty = $${params.length}`);
+  }
+
+  const whereClause = filters.join(" and ");
+
   const chapterQuery = await pool.query(`
     select
       chapter_id,
@@ -221,10 +273,10 @@ async function getDbSummary(userId) {
       count(distinct concat(chapter_id, ':', verse_id, ':', token_index, ':', expected_word))
         filter (where is_correct)::int as correct_unique_words
     from word_attempts
-    where user_id = $1
+    where ${whereClause}
     group by chapter_id
     order by chapter_id;
-  `, [userId]);
+  `, params);
 
   const hardestVerseQuery = await pool.query(`
     with verse_stats as (
@@ -241,13 +293,13 @@ async function getDbSummary(userId) {
             verse_id asc
         ) as ranking
       from word_attempts
-      where user_id = $1
+      where ${whereClause}
       group by chapter_id, verse_id
     )
     select chapter_id, verse_id
     from verse_stats
     where ranking = 1;
-  `, [userId]);
+  `, params);
 
   const hardestVerseByChapter = new Map(
     hardestVerseQuery.rows.map((row) => [Number(row.chapter_id), Number(row.verse_id)])
@@ -266,35 +318,110 @@ async function handleLogin(request, response) {
   const body = await readJsonBody(request);
   const name = String(body.name || "").trim();
   const email = String(body.email || "").trim().toLowerCase();
+  const preferredLanguage = normalizeLanguage(body.preferredLanguage);
 
   if (!name || !email) {
     sendJson(response, 400, { error: "Name and email are required." });
     return;
   }
 
+  if (!(pool && dbConnected)) {
+    const user = getOrCreateMemoryUser(name, email, preferredLanguage);
+    sendJson(response, 200, { user });
+    return;
+  }
+
   const existing = await pool.query(
-    `select id, name, email from users where email = $1 limit 1;`,
+    `select id, name, email, preferred_language from users where email = $1 limit 1;`,
     [email]
   );
 
   if (existing.rows.length) {
+    const existingUser = existing.rows[0];
+    if (existingUser.name !== name || existingUser.preferred_language !== preferredLanguage) {
+      await pool.query(
+        `
+          update users
+          set name = $1, preferred_language = $2
+          where email = $3;
+        `,
+        [name, preferredLanguage, email]
+      );
+    }
+
     sendJson(response, 200, { user: {
-      id: Number(existing.rows[0].id),
-      name: existing.rows[0].name,
-      email: existing.rows[0].email,
+      id: Number(existingUser.id),
+      name,
+      email: existingUser.email,
+      preferredLanguage,
     } });
     return;
   }
 
   const inserted = await pool.query(
-    `insert into users (name, email) values ($1, $2) returning id, name, email;`,
-    [name, email]
+    `
+      insert into users (name, email, preferred_language)
+      values ($1, $2, $3)
+      returning id, name, email, preferred_language;
+    `,
+    [name, email, preferredLanguage]
   );
 
   sendJson(response, 200, { user: {
     id: Number(inserted.rows[0].id),
     name: inserted.rows[0].name,
     email: inserted.rows[0].email,
+    preferredLanguage: inserted.rows[0].preferred_language,
+  } });
+}
+
+async function handleUserPreferences(request, response) {
+  const body = await readJsonBody(request);
+  const userId = Number(body.userId);
+  const preferredLanguage = normalizeLanguage(body.preferredLanguage);
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+
+  if (!userId) {
+    sendJson(response, 400, { error: "Missing userId." });
+    return;
+  }
+
+  if (!(pool && dbConnected)) {
+    const user = [...memoryUsers.values()].find((item) => item.id === userId);
+    if (!user) {
+      sendJson(response, 404, { error: "User not found." });
+      return;
+    }
+    if (name) {
+      user.name = name;
+    }
+    user.preferredLanguage = preferredLanguage;
+    sendJson(response, 200, { user });
+    return;
+  }
+
+  const updated = await pool.query(
+    `
+      update users
+      set
+        name = coalesce(nullif($2, ''), name),
+        preferred_language = $3
+      where id = $1
+      returning id, name, email, preferred_language;
+    `,
+    [userId, name, preferredLanguage]
+  );
+
+  if (!updated.rows.length) {
+    sendJson(response, 404, { error: "User not found." });
+    return;
+  }
+
+  sendJson(response, 200, { user: {
+    id: Number(updated.rows[0].id),
+    name: updated.rows[0].name,
+    email: updated.rows[0].email,
+    preferredLanguage: updated.rows[0].preferred_language,
   } });
 }
 
@@ -395,6 +522,18 @@ async function handleAttempt(request, response) {
   };
 
   if (pool && dbConnected) {
+    const userCheck = await pool.query(
+      `select id from users where id = $1 limit 1;`,
+      [attempt.userId]
+    );
+
+    if (!userCheck.rows.length) {
+      sendJson(response, 400, {
+        error: "Your saved session is out of date. Please sign out and sign in again.",
+      });
+      return;
+    }
+
     await pool.query(
       `
         insert into word_attempts (user_id, difficulty, chapter_id, verse_id, token_index, expected_word, answer, is_correct)
@@ -479,7 +618,10 @@ async function handleAttempt(request, response) {
 
 async function handleSummary(response, url) {
   const userId = Number(url.searchParams.get("userId"));
-  const chapters = pool && dbConnected && userId ? await getDbSummary(userId) : getMemorySummary();
+  const difficulty = String(url.searchParams.get("difficulty") || "");
+  const chapters = pool && dbConnected && userId
+    ? await getDbSummary(userId, difficulty)
+    : getMemorySummary(difficulty);
 
   const troubleChapters = [...chapters]
     .filter((chapter) => chapter.attempts > 0)
@@ -532,6 +674,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/user-preferences") {
+      await handleUserPreferences(request, response);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/user-progress") {
       await handleUserProgress(request, response, url);
       return;
@@ -576,6 +723,7 @@ initDb()
   .catch((error) => {
     dbConnected = false;
     console.error("Database init failed:", error.message);
+    console.warn("Continuing in local-only mode. Progress and leaderboard data will not persist across restarts until PostgreSQL is available.");
   })
   .finally(() => {
     server.listen(PORT, HOST, () => {

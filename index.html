@@ -4,51 +4,82 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>John NIV Memory Builder</title>
+    <link
+      rel="icon"
+      href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">✝️</text></svg>'
+    />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div id="auth-overlay" class="auth-overlay">
       <form id="auth-form" class="auth-card">
-        <p class="section-label">Sign In</p>
-        <h2>Start Memorizing John</h2>
-        <p class="muted">
+        <p id="auth-section-label" class="section-label">Sign In</p>
+        <h2 id="auth-title">Start Memorizing John</h2>
+        <p id="auth-copy" class="muted">
           Enter your name and email once. Your name will be used on the leaderboard.
         </p>
         <label class="field">
-          <span>Name</span>
+          <span id="auth-name-label">Name</span>
           <input id="auth-name" type="text" required />
         </label>
         <label class="field">
-          <span>Email</span>
+          <span id="auth-language-label">Language</span>
+          <select id="auth-language">
+            <option value="en">English</option>
+            <option value="ko">한국어</option>
+          </select>
+        </label>
+        <label class="field">
+          <span id="auth-email-label">Email</span>
           <input id="auth-email" type="email" required />
         </label>
         <p id="auth-error" class="answer-meta incorrect"></p>
-        <button type="submit">Enter</button>
+        <button id="auth-submit" type="submit">Enter</button>
       </form>
     </div>
 
     <header class="site-header">
       <div>
-        <p class="eyebrow">Memorize John</p>
-        <h1>John NIV Fill-In Quiz</h1>
+        <p id="header-eyebrow" class="eyebrow">Memorize John</p>
+        <h1 id="site-title">John NIV Fill-In Quiz</h1>
       </div>
       <div class="header-side">
-        <p class="header-copy">
+        <div class="header-actions">
+          <div id="language-toggle" class="language-toggle" role="group" aria-label="Language toggle">
+            <button
+              id="language-toggle-en"
+              class="secondary-button toggle-button"
+              data-language-toggle="en"
+              type="button"
+            >
+              English
+            </button>
+            <button
+              id="language-toggle-ko"
+              class="secondary-button toggle-button"
+              data-language-toggle="ko"
+              type="button"
+            >
+              한국어
+            </button>
+          </div>
+          <div class="user-chip">
+            <strong id="user-name">Not signed in</strong>
+            <button id="sign-out" class="secondary-button" type="button">Sign out</button>
+          </div>
+        </div>
+        <p id="header-copy" class="header-copy">
           Almost every word is hidden. Type each missing word, check it
           immediately, and build a record of where John is easiest or hardest for
           you.
         </p>
-        <div class="user-chip">
-          <strong id="user-name">Not signed in</strong>
-          <button id="sign-out" class="secondary-button" type="button">Sign out</button>
-        </div>
       </div>
     </header>
 
     <main class="layout">
       <aside class="sidebar card">
         <div class="sidebar-heading">
-          <h2>Chapters</h2>
+          <h2 id="chapters-heading">Chapters</h2>
           <p id="db-status" class="muted">Checking database status...</p>
         </div>
         <div id="chapter-list" class="chapter-list"></div>
@@ -57,7 +88,7 @@
       <section class="content">
         <section class="hero card">
           <div>
-            <p class="section-label">Overview</p>
+            <p id="overview-label" class="section-label">Overview</p>
             <h2 id="scope-title">John 1</h2>
           </div>
           <div class="overall-progress">
@@ -76,7 +107,7 @@
           <article class="card insights-card">
             <div class="section-heading">
               <div>
-                <p class="section-label">Leaderboard</p>
+                <p id="leaderboard-label" class="section-label">Leaderboard</p>
                 <h2 id="leaderboard-title">Extreme Leaderboard</h2>
               </div>
             </div>
@@ -86,8 +117,8 @@
           <article class="card controls-card">
             <div class="section-heading">
               <div>
-                <p class="section-label">Recommendations</p>
-                <h2>Where To Focus</h2>
+                <p id="recommendations-label" class="section-label">Recommendations</p>
+                <h2 id="recommendations-title">Where To Focus</h2>
               </div>
             </div>
             <div id="recommendations" class="recommendations"></div>
@@ -97,14 +128,14 @@
         <article class="card chapter-card">
           <div class="section-heading">
             <div>
-              <p class="section-label">Quiz</p>
+              <p id="quiz-label" class="section-label">Quiz</p>
               <h2 id="chapter-title">Chapter 1</h2>
             </div>
             <p id="chapter-summary" class="muted"></p>
           </div>
           <div class="quiz-toolbar">
             <label class="field">
-              <span>Difficulty</span>
+              <span id="difficulty-label">Difficulty</span>
               <select id="difficulty-select">
                 <option value="easy">Easy</option>
                 <option value="medium">Medium</option>
@@ -114,7 +145,7 @@
               </select>
             </label>
             <div class="field">
-              <span>Chapter reset</span>
+              <span id="chapter-reset-label">Chapter reset</span>
               <button id="reset-chapter" class="secondary-button" type="button">
                 Reset this chapter
               </button>
@@ -127,6 +158,7 @@
     </main>
 
     <script src="./data/john-quiz-data.js"></script>
+    <script src="./data/john-quiz-data-ko.js"></script>
     <script src="./script.js"></script>
   </body>
 </html>

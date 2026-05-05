@@ -75,9 +75,23 @@ select {
   justify-items: end;
 }
 
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: end;
+  align-items: center;
+}
+
 .user-chip {
   display: flex;
   gap: 0.75rem;
+  align-items: center;
+}
+
+.language-toggle {
+  display: inline-flex;
+  gap: 0.5rem;
   align-items: center;
 }
 
@@ -323,6 +337,12 @@ select {
   padding: 0.8rem 1rem;
 }
 
+.toggle-button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff8f1;
+}
+
 .hero-actions {
   margin-top: 1rem;
 }
@@ -451,5 +471,11 @@ select {
 
   .header-side {
     justify-items: start;
+  }
+
+  .header-actions,
+  .language-toggle,
+  .user-chip {
+    justify-content: start;
   }
 }

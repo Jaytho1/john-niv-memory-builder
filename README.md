@@ -18,7 +18,7 @@ A lightweight Node.js quiz app for memorizing the Gospel of John with chapter pr
 npm install
 ```
 
-2. Create `.env`:
+2. Create `.env` if you want PostgreSQL-backed progress and leaderboards:
 
 ```env
 DATABASE_URL=postgresql://USERNAME:PASSWORD@HOST:5432/DATABASE_NAME
@@ -30,8 +30,12 @@ HOST=127.0.0.1
 3. Start the app:
 
 ```bash
+npm run dev
+# or
 npm start
 ```
+
+If `DATABASE_URL` is missing or the database is unreachable, the app still starts and falls back to local in-memory tracking for the current server process.
 
 ## Production
 
@@ -125,8 +129,10 @@ Paste in the cron line and replace `/path/to/app` with the real server path.
 curl http://127.0.0.1:43117/health
 ```
 
-Expected response:
+Expected response when PostgreSQL is connected:
 
 ```json
 {"ok":true,"db":{"configured":true,"connected":true}}
 ```
+
+If you are running without a database, `connected` will be `false`.

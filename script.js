@@ -1,72 +1,249 @@
-const data = window.JOHN_QUIZ_DATA;
+const datasets = {
+  en: window.JOHN_QUIZ_DATA,
+  ko: window.JOHN_QUIZ_DATA_KO,
+};
+
 const progressStorageKey = "john-quiz-progress-v2";
 const draftStorageKey = "john-quiz-drafts-v1";
 const difficultyStorageKey = "john-quiz-difficulty-v1";
 const sessionStorageKey = "john-quiz-session-v1";
 const leaderboardRankStorageKey = "john-quiz-ranks-v1";
+const languageStorageKey = "john-quiz-language-v1";
 const autosaveIntervalMs = 2 * 60 * 1000;
 
 const elements = {
   authOverlay: document.querySelector("#auth-overlay"),
   authForm: document.querySelector("#auth-form"),
+  authSectionLabel: document.querySelector("#auth-section-label"),
+  authTitle: document.querySelector("#auth-title"),
+  authCopy: document.querySelector("#auth-copy"),
+  authNameLabel: document.querySelector("#auth-name-label"),
   authName: document.querySelector("#auth-name"),
+  authLanguageLabel: document.querySelector("#auth-language-label"),
+  authLanguage: document.querySelector("#auth-language"),
+  authEmailLabel: document.querySelector("#auth-email-label"),
   authEmail: document.querySelector("#auth-email"),
+  authSubmit: document.querySelector("#auth-submit"),
   authError: document.querySelector("#auth-error"),
+  headerEyebrow: document.querySelector("#header-eyebrow"),
+  siteTitle: document.querySelector("#site-title"),
+  headerCopy: document.querySelector("#header-copy"),
+  languageToggle: document.querySelector("#language-toggle"),
+  languageToggleButtons: [...document.querySelectorAll("[data-language-toggle]")],
   userName: document.querySelector("#user-name"),
   signOut: document.querySelector("#sign-out"),
-  chapterList: document.querySelector("#chapter-list"),
+  chaptersHeading: document.querySelector("#chapters-heading"),
   dbStatus: document.querySelector("#db-status"),
+  overviewLabel: document.querySelector("#overview-label"),
+  chapterList: document.querySelector("#chapter-list"),
   scopeTitle: document.querySelector("#scope-title"),
   overallProgressLabel: document.querySelector("#overall-progress-label"),
   overallProgressValue: document.querySelector("#overall-progress-value"),
   overallProgressFill: document.querySelector("#overall-progress-fill"),
   stats: document.querySelector("#stats"),
+  leaderboardLabel: document.querySelector("#leaderboard-label"),
   leaderboardTitle: document.querySelector("#leaderboard-title"),
   leaderboard: document.querySelector("#leaderboard"),
+  recommendationsLabel: document.querySelector("#recommendations-label"),
+  recommendationsTitle: document.querySelector("#recommendations-title"),
   recommendations: document.querySelector("#recommendations"),
+  quizLabel: document.querySelector("#quiz-label"),
+  difficultyLabel: document.querySelector("#difficulty-label"),
   difficultySelect: document.querySelector("#difficulty-select"),
+  chapterResetLabel: document.querySelector("#chapter-reset-label"),
   resetChapter: document.querySelector("#reset-chapter"),
   chapterTitle: document.querySelector("#chapter-title"),
   chapterSummary: document.querySelector("#chapter-summary"),
   chapterQuiz: document.querySelector("#chapter-quiz"),
 };
 
-const keywordStopwords = new Set([
-  "about", "after", "again", "among", "around", "because", "before", "being",
-  "came", "come", "does", "down", "each", "even", "every", "gave", "give",
-  "going", "into", "just", "made", "many", "more", "most", "much", "only",
-  "other", "over", "said", "same", "sent", "some", "such", "than", "that",
-  "them", "then", "there", "these", "they", "this", "those", "through", "very",
-  "were", "what", "when", "where", "which", "while", "with", "would"
-]);
+const uiCopy = {
+  en: {
+    htmlLang: "en",
+    documentTitle: "John NIV Memory Builder",
+    headerEyebrow: "Memorize John",
+    siteTitle: "John NIV Fill-In Quiz",
+    headerCopy: "Almost every word is hidden. Type each missing word, check it immediately, and build a record of where John is easiest or hardest for you.",
+    authSectionLabel: "Sign In",
+    authTitle: "Start Memorizing John",
+    authCopy: "Enter your name and email once. Your name will be used on the leaderboard.",
+    authNameLabel: "Name",
+    authLanguageLabel: "Language",
+    authEmailLabel: "Email",
+    authSubmit: "Enter",
+    signOut: "Sign out",
+    notSignedIn: "Not signed in",
+    chaptersHeading: "Chapters",
+    overviewLabel: "Overview",
+    leaderboardLabel: "Leaderboard",
+    recommendationsLabel: "Recommendations",
+    recommendationsTitle: "Where To Focus",
+    quizLabel: "Quiz",
+    difficultyLabel: "Difficulty",
+    chapterResetLabel: "Chapter reset",
+    resetChapter: "Reset this chapter",
+    languageToggleLabel: "Language toggle",
+    dbChecking: "Checking database status...",
+    dbConnected: "Postgres connected",
+    dbDisconnected: "Database not connected yet",
+    dbAnalyticsError: "Could not load analytics yet.",
+    difficultyLabels: {
+      easy: "Easy",
+      medium: "Medium",
+      hard: "Hard",
+      difficult: "Difficult",
+      extreme: "Extreme",
+    },
+    difficultyDescriptions: {
+      easy: "Easy keeps one keyword blank per sentence.",
+      medium: "Medium hides one to two keywords per sentence.",
+      hard: "Hard hides up to three keywords per sentence.",
+      difficult: "Difficult hides up to six testable words per sentence.",
+      extreme: "Extreme hides every testable word.",
+    },
+    overallProgressLabel: (difficultyLabel) => `${difficultyLabel} overall progress`,
+    formatChapterLabel: (chapterId) => `John ${chapterId}`,
+    formatScopeTitle: (chapterId) => `John ${chapterId}`,
+    formatChapterTitle: (chapterId) => `John ${chapterId}`,
+    chapterSummary: (description, verseCount) => `${description} ${verseCount} verses in this chapter.`,
+    leaderboardTitle: (difficultyLabel) => `${difficultyLabel} Leaderboard`,
+    noScores: () => "No scores yet for this difficulty.",
+    statLabels: {
+      difficulty: "Difficulty",
+      visibleBlanks: "Visible blanks",
+      solvedBlanks: "Solved blanks",
+      attempts: "Attempts",
+      correctIncorrect: "Correct / Incorrect",
+    },
+    statsValueDifficulty: (difficultyLabel) => difficultyLabel,
+    rankLabel: (rank) => `Rank #${rank}`,
+    recommendationsEmpty: (description) => `${description} Answer a few words and this panel will start recommending chapters and verses to review.`,
+    recommendationCompletion: (difficultyLabel, completion) => `${difficultyLabel} completion: ${completion}%`,
+    recommendationSolved: (solved, visible) => `Solved blanks: ${solved} / ${visible}`,
+    recommendationVerse: (verseId) => `Start again at verse: ${verseId ?? "Completed"}`,
+    solvedPreviously: "Solved previously",
+    correct: "Correct",
+    hintStartsWith: (value) => `Hint: starts with ${value}`,
+    correctWord: (value) => `Correct word: ${value}`,
+    answerSaveError: "Could not save that answer yet.",
+    wordAriaLabel: (chapterId, verseId) => `John ${chapterId}:${verseId} word`,
+    metaPerformance: (correctCount, correctPercentage, incorrectPercentage) => `Right ${correctCount} time${correctCount === 1 ? "" : "s"} • ${correctPercentage}% correct / ${incorrectPercentage}% incorrect`,
+  },
+  ko: {
+    htmlLang: "ko",
+    documentTitle: "요한복음 개역한글 암송 퀴즈",
+    headerEyebrow: "요한복음 암송",
+    siteTitle: "요한복음 개역한글 빈칸 퀴즈",
+    headerCopy: "거의 모든 단어가 가려집니다. 빈칸을 하나씩 입력하고 바로 확인하면서, 요한복음에서 어디가 가장 쉽고 어려운지 기록해 보세요.",
+    authSectionLabel: "시작하기",
+    authTitle: "요한복음 암송 시작",
+    authCopy: "이름과 이메일을 한 번만 입력하세요. 이름은 리더보드에 표시됩니다.",
+    authNameLabel: "이름",
+    authLanguageLabel: "언어",
+    authEmailLabel: "이메일",
+    authSubmit: "입장하기",
+    signOut: "로그아웃",
+    notSignedIn: "로그인되지 않음",
+    chaptersHeading: "장 목록",
+    overviewLabel: "개요",
+    leaderboardLabel: "리더보드",
+    recommendationsLabel: "추천",
+    recommendationsTitle: "집중할 곳",
+    quizLabel: "퀴즈",
+    difficultyLabel: "난이도",
+    chapterResetLabel: "장 초기화",
+    resetChapter: "이 장 다시 시작",
+    languageToggleLabel: "언어 전환",
+    dbChecking: "데이터베이스 상태 확인 중...",
+    dbConnected: "Postgres 연결됨",
+    dbDisconnected: "데이터베이스가 아직 연결되지 않았습니다",
+    dbAnalyticsError: "분석 정보를 아직 불러오지 못했습니다.",
+    difficultyLabels: {
+      easy: "쉬움",
+      medium: "보통",
+      hard: "어려움",
+      difficult: "매우 어려움",
+      extreme: "극한",
+    },
+    difficultyDescriptions: {
+      easy: "쉬움은 문장마다 핵심 단어 하나만 빈칸으로 남깁니다.",
+      medium: "보통은 문장마다 핵심 단어 하나에서 두 개를 가립니다.",
+      hard: "어려움은 문장마다 최대 세 단어를 가립니다.",
+      difficult: "매우 어려움은 문장마다 최대 여섯 개의 학습 단어를 가립니다.",
+      extreme: "극한은 학습 가능한 모든 단어를 가립니다.",
+    },
+    overallProgressLabel: (difficultyLabel) => `${difficultyLabel} 전체 진행률`,
+    formatChapterLabel: (chapterId) => `요한복음 ${chapterId}장`,
+    formatScopeTitle: (chapterId) => `요한복음 ${chapterId}장`,
+    formatChapterTitle: (chapterId) => `요한복음 ${chapterId}장`,
+    chapterSummary: (description, verseCount) => `${description} 이 장에는 ${verseCount}개의 절이 있습니다.`,
+    leaderboardTitle: (difficultyLabel) => `${difficultyLabel} 리더보드`,
+    noScores: () => "이 난이도에는 아직 기록이 없습니다.",
+    statLabels: {
+      difficulty: "난이도",
+      visibleBlanks: "보이는 빈칸",
+      solvedBlanks: "맞춘 빈칸",
+      attempts: "시도 횟수",
+      correctIncorrect: "정답 / 오답",
+    },
+    statsValueDifficulty: (difficultyLabel) => difficultyLabel,
+    rankLabel: (rank) => `순위 #${rank}`,
+    recommendationsEmpty: (description) => `${description} 몇 단어만 풀어도 이 패널이 다시 볼 장과 절을 추천해 드립니다.`,
+    recommendationCompletion: (difficultyLabel, completion) => `${difficultyLabel} 진행률: ${completion}%`,
+    recommendationSolved: (solved, visible) => `맞춘 빈칸: ${solved} / ${visible}`,
+    recommendationVerse: (verseId) => `다시 시작할 절: ${verseId ?? "완료"}`,
+    solvedPreviously: "이전에 맞춤",
+    correct: "정답",
+    hintStartsWith: (value) => `힌트: ${value}(으)로 시작`,
+    correctWord: (value) => `정답 단어: ${value}`,
+    answerSaveError: "아직 이 답을 저장하지 못했습니다.",
+    wordAriaLabel: (chapterId, verseId) => `요한복음 ${chapterId}:${verseId} 단어`,
+    metaPerformance: (correctCount, correctPercentage, incorrectPercentage) => `정답 ${correctCount}회 • 정답 ${correctPercentage}% / 오답 ${incorrectPercentage}%`,
+  },
+};
 
-const priorityKeywords = new Set([
-  "abraham", "advocate", "alive", "amen", "angel", "anointed", "authority",
-  "believe", "bread", "christ", "cross", "darkness", "david", "disciple",
-  "disciples", "eternal", "faith", "father", "glory", "god", "grace",
-  "heaven", "holy", "hour", "israel", "jews", "jesus", "jerusalem", "john",
-  "judgment", "king", "kingdom", "lamb", "law", "life", "light",
-  "lord", "love", "messiah", "miracle", "miracles", "moses", "nazareth",
-  "passover", "peace", "peter", "pharisees", "pilate", "pray", "prophet",
-  "rabbi", "resurrection", "sabbath", "salvation", "scripture", "shepherd",
-  "sign", "signs", "sin", "sins", "son", "spirit", "teacher", "temple",
-  "testify", "testimony", "truth", "vine", "water", "witness", "word", "world"
-]);
+const keywordStopwordsByLanguage = {
+  en: new Set([
+    "about", "after", "again", "among", "around", "because", "before", "being",
+    "came", "come", "does", "down", "each", "even", "every", "gave", "give",
+    "going", "into", "just", "made", "many", "more", "most", "much", "only",
+    "other", "over", "said", "same", "sent", "some", "such", "than", "that",
+    "them", "then", "there", "these", "they", "this", "those", "through", "very",
+    "were", "what", "when", "where", "which", "while", "with", "would",
+  ]),
+  ko: new Set(),
+};
 
-const deprioritizedWords = new Set([
-  "answered", "asking", "asked", "asks", "brought", "called", "calling",
-  "cried", "declared", "found", "gave", "heard", "knew", "know", "knowing",
-  "looked", "looking", "passed", "passing", "replied", "replies", "saying",
-  "says", "showed", "speaking", "spoke", "standing", "stood", "taken", "tell",
-  "telling", "tells", "told", "went"
-]);
+const priorityKeywordsByLanguage = {
+  en: new Set([
+    "abraham", "advocate", "alive", "amen", "angel", "anointed", "authority",
+    "believe", "bread", "christ", "cross", "darkness", "david", "disciple",
+    "disciples", "eternal", "faith", "father", "glory", "god", "grace",
+    "heaven", "holy", "hour", "israel", "jews", "jesus", "jerusalem", "john",
+    "judgment", "king", "kingdom", "lamb", "law", "life", "light",
+    "lord", "love", "messiah", "miracle", "miracles", "moses", "nazareth",
+    "passover", "peace", "peter", "pharisees", "pilate", "pray", "prophet",
+    "rabbi", "resurrection", "sabbath", "salvation", "scripture", "shepherd",
+    "sign", "signs", "sin", "sins", "son", "spirit", "teacher", "temple",
+    "testify", "testimony", "truth", "vine", "water", "witness", "word", "world",
+  ]),
+  ko: new Set([
+    "하나님", "예수", "예수께서", "그리스도", "말씀", "빛", "생명", "세상",
+    "아버지", "아들", "영생", "성령", "진리", "사랑", "유대인", "모세",
+    "제자", "베드로", "왕", "선지자", "부활", "양", "포도나무", "물", "떡",
+    "길", "은혜", "영광", "어린", "양이로다",
+  ]),
+};
 
-const difficultyDescriptions = {
-  easy: "Easy keeps one keyword blank per sentence.",
-  medium: "Medium hides one to two keywords per sentence.",
-  hard: "Hard hides up to three keywords per sentence.",
-  difficult: "Difficult hides up to six testable words per sentence.",
-  extreme: "Extreme hides every testable word.",
+const deprioritizedWordsByLanguage = {
+  en: new Set([
+    "answered", "asking", "asked", "asks", "brought", "called", "calling",
+    "cried", "declared", "found", "gave", "heard", "knew", "know", "knowing",
+    "looked", "looking", "passed", "passing", "replied", "replies", "saying",
+    "says", "showed", "speaking", "spoke", "standing", "stood", "taken", "tell",
+    "telling", "tells", "told", "went",
+  ]),
+  ko: new Set(),
 };
 
 const state = {
@@ -78,7 +255,13 @@ const state = {
   drafts: loadJson(draftStorageKey),
   previousRanks: loadJson(leaderboardRankStorageKey),
   currentUser: loadJson(sessionStorageKey),
+  currentLanguage: loadLanguage(),
+  pendingFocusKey: null,
 };
+
+if (state.currentUser?.preferredLanguage && datasets[state.currentUser.preferredLanguage]) {
+  state.currentLanguage = state.currentUser.preferredLanguage;
+}
 
 function loadJson(key) {
   try {
@@ -90,6 +273,15 @@ function loadJson(key) {
 
 function saveJson(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function loadLanguage() {
+  const stored = localStorage.getItem(languageStorageKey);
+  return stored === "ko" ? "ko" : "en";
+}
+
+function saveLanguage() {
+  localStorage.setItem(languageStorageKey, state.currentLanguage);
 }
 
 function saveProgress() {
@@ -115,12 +307,32 @@ function clearLocalWork() {
   saveDrafts();
 }
 
+function getCopy() {
+  return uiCopy[state.currentLanguage] || uiCopy.en;
+}
+
+function getData() {
+  return datasets[state.currentLanguage] || datasets.en;
+}
+
 function getChapter() {
-  return data.chapters.find((chapter) => chapter.id === state.selectedChapterId);
+  return getData().chapters.find((chapter) => chapter.id === state.selectedChapterId);
 }
 
 function getDifficulty() {
   return elements.difficultySelect.value;
+}
+
+function getDifficultyStorageKey() {
+  return `${state.currentLanguage}:${getDifficulty()}`;
+}
+
+function getDifficultyLabel(difficulty) {
+  return getCopy().difficultyLabels[difficulty] || difficulty;
+}
+
+function getDifficultyDescription(difficulty) {
+  return getCopy().difficultyDescriptions[difficulty] || difficulty;
 }
 
 function setDifficulty(value) {
@@ -129,11 +341,15 @@ function setDifficulty(value) {
 }
 
 function normalizeAnswer(value) {
-  return value.trim().toLowerCase();
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function formatChapterLabel(chapterId) {
+  return getCopy().formatChapterLabel(chapterId);
 }
 
 function getTokenKey(chapterId, verseId, tokenIndex) {
-  return `${state.currentUser?.id || "guest"}:${getDifficulty()}:${chapterId}:${verseId}:${tokenIndex}`;
+  return `${state.currentUser?.id || "guest"}:${state.currentLanguage}:${getDifficulty()}:${chapterId}:${verseId}:${tokenIndex}`;
 }
 
 function getTokenProgress(chapterId, verseId, tokenIndex) {
@@ -160,7 +376,7 @@ function setTokenDraft(chapterId, verseId, tokenIndex, value) {
 }
 
 function clearChapterProgress(chapterId) {
-  const prefix = `${state.currentUser?.id || "guest"}:${getDifficulty()}:${chapterId}:`;
+  const prefix = `${state.currentUser?.id || "guest"}:${state.currentLanguage}:${getDifficulty()}:${chapterId}:`;
   Object.keys(state.progress).forEach((key) => {
     if (key.startsWith(prefix)) {
       delete state.progress[key];
@@ -176,18 +392,26 @@ function clearChapterProgress(chapterId) {
 }
 
 function isKeywordToken(token) {
-  return token.type === "word"
-    && token.testable
-    && token.normalized.length > 2
-    && !keywordStopwords.has(token.normalized);
+  if (token.type !== "word" || !token.testable) {
+    return false;
+  }
+
+  if (state.currentLanguage === "ko") {
+    return token.normalized.length > 1;
+  }
+
+  return token.normalized.length > 2
+    && !keywordStopwordsByLanguage.en.has(token.normalized);
 }
 
 function scoreTokenForDifficulty(token) {
+  const priorityKeywords = priorityKeywordsByLanguage[state.currentLanguage] || new Set();
+  const deprioritizedWords = deprioritizedWordsByLanguage[state.currentLanguage] || new Set();
   let score = token.value.length;
   if (priorityKeywords.has(token.normalized)) {
     score += 100;
   }
-  if (/^[A-Z]/.test(token.value)) {
+  if (state.currentLanguage === "en" && /^[A-Z]/.test(token.value)) {
     score += 8;
   }
   if (deprioritizedWords.has(token.normalized)) {
@@ -254,7 +478,11 @@ function shouldHideToken(tokens, tokenIndex, difficulty) {
     }
     return isKeywordToken(currentToken);
   });
-  return pickIndicesFromCandidates(candidateIndices, tokens, getPerSentenceLimit(difficulty, candidateIndices.length)).includes(tokenIndex);
+  return pickIndicesFromCandidates(
+    candidateIndices,
+    tokens,
+    getPerSentenceLimit(difficulty, candidateIndices.length)
+  ).includes(tokenIndex);
 }
 
 async function api(path, options = {}) {
@@ -275,9 +503,15 @@ async function api(path, options = {}) {
 async function login(name, email) {
   const payload = await api("/api/login", {
     method: "POST",
-    body: JSON.stringify({ name, email }),
+    body: JSON.stringify({ name, email, preferredLanguage: state.currentLanguage }),
   });
-  state.currentUser = payload.user;
+  state.currentUser = {
+    ...payload.user,
+    language: payload.user.preferredLanguage || state.currentLanguage,
+    preferredLanguage: payload.user.preferredLanguage || state.currentLanguage,
+  };
+  state.currentLanguage = state.currentUser.preferredLanguage;
+  saveLanguage();
   saveSession();
   elements.userName.textContent = payload.user.name;
   elements.authOverlay.classList.remove("visible");
@@ -292,7 +526,7 @@ function signOut() {
   state.currentUser = null;
   saveSession();
   clearLocalWork();
-  elements.userName.textContent = "Not signed in";
+  elements.userName.textContent = getCopy().notSignedIn;
   elements.authOverlay.classList.add("visible");
   render();
 }
@@ -300,18 +534,42 @@ function signOut() {
 async function loadSummary() {
   if (!state.currentUser?.id) return;
   try {
-    const payload = await api(`/api/progress/summary?userId=${state.currentUser.id}`);
+    const difficulty = encodeURIComponent(getDifficultyStorageKey());
+    const payload = await api(`/api/progress/summary?userId=${state.currentUser.id}&difficulty=${difficulty}`);
     state.summary = payload;
     state.dbConnected = payload.db.connected;
   } catch {
     state.summary = null;
-    elements.dbStatus.textContent = "Could not load analytics yet.";
+    state.dbConnected = false;
+    elements.dbStatus.textContent = getCopy().dbAnalyticsError;
+  }
+}
+
+async function persistUserPreferences() {
+  if (!state.currentUser?.id) return;
+  try {
+    const payload = await api("/api/user-preferences", {
+      method: "POST",
+      body: JSON.stringify({
+        userId: state.currentUser.id,
+        preferredLanguage: state.currentLanguage,
+      }),
+    });
+    state.currentUser = {
+      ...state.currentUser,
+      ...payload.user,
+      language: payload.user.preferredLanguage || state.currentLanguage,
+      preferredLanguage: payload.user.preferredLanguage || state.currentLanguage,
+    };
+    saveSession();
+  } catch {
+    // Keep the UI responsive even if preference sync fails.
   }
 }
 
 async function loadLeaderboard() {
   if (!state.currentUser?.id) return;
-  const difficulty = getDifficulty();
+  const difficulty = encodeURIComponent(getDifficultyStorageKey());
   try {
     const payload = await api(`/api/leaderboard?difficulty=${difficulty}&userId=${state.currentUser.id}`);
     state.leaderboard = payload.rows;
@@ -324,7 +582,9 @@ async function loadLeaderboard() {
 async function hydrateSolvedProgress() {
   if (!state.currentUser?.id) return;
   try {
-    const payload = await api(`/api/user-progress?userId=${state.currentUser.id}&difficulty=${getDifficulty()}`);
+    const difficulty = encodeURIComponent(getDifficultyStorageKey());
+    const payload = await api(`/api/user-progress?userId=${state.currentUser.id}&difficulty=${difficulty}`);
+    const data = getData();
     payload.rows.forEach((row) => {
       const token = data.chapters
         .find((chapter) => chapter.id === row.chapterId)
@@ -336,13 +596,63 @@ async function hydrateSolvedProgress() {
         solved: true,
         value: token.value,
         hintLevel: 0,
-        metaText: "Solved previously",
+        metaText: getCopy().solvedPreviously,
       };
     });
     saveProgress();
   } catch {
     // Keep local-only state if hydration fails.
   }
+}
+
+function syncLanguageControls() {
+  elements.authLanguage.value = state.currentLanguage;
+  elements.languageToggle.setAttribute("aria-label", getCopy().languageToggleLabel);
+  elements.languageToggleButtons.forEach((button) => {
+    const isActive = button.dataset.languageToggle === state.currentLanguage;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+}
+
+function renderDifficultyOptions() {
+  [...elements.difficultySelect.options].forEach((option) => {
+    option.textContent = getDifficultyLabel(option.value);
+  });
+}
+
+function renderStaticCopy() {
+  const copy = getCopy();
+  document.documentElement.lang = copy.htmlLang;
+  document.title = copy.documentTitle;
+  elements.headerEyebrow.textContent = copy.headerEyebrow;
+  elements.siteTitle.textContent = copy.siteTitle;
+  elements.headerCopy.textContent = copy.headerCopy;
+  elements.authSectionLabel.textContent = copy.authSectionLabel;
+  elements.authTitle.textContent = copy.authTitle;
+  elements.authCopy.textContent = copy.authCopy;
+  elements.authNameLabel.textContent = copy.authNameLabel;
+  elements.authLanguageLabel.textContent = copy.authLanguageLabel;
+  elements.authEmailLabel.textContent = copy.authEmailLabel;
+  elements.authSubmit.textContent = copy.authSubmit;
+  elements.signOut.textContent = copy.signOut;
+  elements.chaptersHeading.textContent = copy.chaptersHeading;
+  elements.overviewLabel.textContent = copy.overviewLabel;
+  elements.leaderboardLabel.textContent = copy.leaderboardLabel;
+  elements.recommendationsLabel.textContent = copy.recommendationsLabel;
+  elements.recommendationsTitle.textContent = copy.recommendationsTitle;
+  elements.quizLabel.textContent = copy.quizLabel;
+  elements.difficultyLabel.textContent = copy.difficultyLabel;
+  elements.chapterResetLabel.textContent = copy.chapterResetLabel;
+  elements.resetChapter.textContent = copy.resetChapter;
+  if (!state.currentUser?.id) {
+    elements.userName.textContent = copy.notSignedIn;
+  }
+  if (!elements.dbStatus.textContent || elements.dbStatus.textContent === uiCopy.en.dbChecking || elements.dbStatus.textContent === uiCopy.ko.dbChecking) {
+    elements.dbStatus.textContent = copy.dbChecking;
+  }
+  renderDifficultyOptions();
+  syncLanguageControls();
 }
 
 function renderAuth() {
@@ -352,10 +662,11 @@ function renderAuth() {
     return;
   }
   elements.authOverlay.classList.add("visible");
-  elements.userName.textContent = "Not signed in";
+  elements.userName.textContent = getCopy().notSignedIn;
 }
 
 function renderChapterList() {
+  const data = getData();
   elements.chapterList.innerHTML = "";
   data.chapters.forEach((chapter) => {
     const visibleBlanks = getChapterVisibleBlankCount(chapter);
@@ -368,7 +679,7 @@ function renderChapterList() {
     button.innerHTML = `
       <span class="chapter-button-fill"></span>
       <span class="chapter-button-content">
-        <span>John ${chapter.id}</span>
+        <span>${formatChapterLabel(chapter.id)}</span>
         <span class="chapter-button-meta">${percent}%</span>
       </span>
     `;
@@ -396,6 +707,7 @@ function getChapterVisibleBlankCount(chapter) {
 }
 
 function getOverallDifficultyProgress() {
+  const data = getData();
   const totals = data.chapters.reduce((accumulator, chapter) => {
     accumulator.visible += getChapterVisibleBlankCount(chapter);
     accumulator.solved += getChapterSolvedCount(chapter);
@@ -410,25 +722,25 @@ function getOverallDifficultyProgress() {
 function renderOverallProgress() {
   const difficulty = getDifficulty();
   const progress = getOverallDifficultyProgress();
-  const difficultyLabel = difficulty.charAt(0).toUpperCase() + difficulty.slice(1);
-  elements.overallProgressLabel.textContent = `${difficultyLabel} overall progress`;
+  elements.overallProgressLabel.textContent = getCopy().overallProgressLabel(getDifficultyLabel(difficulty));
   elements.overallProgressValue.textContent = `${progress.percent}%`;
   elements.overallProgressFill.style.width = `${progress.percent}%`;
 }
 
 function renderStats() {
+  const copy = getCopy();
   const chapter = getChapter();
   const chapterSummary = state.summary?.chapters?.find((item) => item.chapterId === chapter.id);
   const totalAttempts = chapterSummary?.attempts ?? 0;
   const accuracy = chapterSummary?.accuracy ?? 0;
   const incorrect = totalAttempts ? 100 - accuracy : 0;
-  elements.scopeTitle.textContent = `John ${chapter.id}`;
+  elements.scopeTitle.textContent = copy.formatScopeTitle(chapter.id);
   elements.stats.innerHTML = [
-    ["Difficulty", getDifficulty()],
-    ["Visible blanks", getChapterVisibleBlankCount(chapter)],
-    ["Solved blanks", getChapterSolvedCount(chapter)],
-    ["Attempts", totalAttempts],
-    ["Correct / Incorrect", `${accuracy}% / ${incorrect}%`],
+    [copy.statLabels.difficulty, copy.statsValueDifficulty(getDifficultyLabel(getDifficulty()))],
+    [copy.statLabels.visibleBlanks, getChapterVisibleBlankCount(chapter)],
+    [copy.statLabels.solvedBlanks, getChapterSolvedCount(chapter)],
+    [copy.statLabels.attempts, totalAttempts],
+    [copy.statLabels.correctIncorrect, `${accuracy}% / ${incorrect}%`],
   ].map(([label, value]) => `
     <div class="stat">
       <span class="stat-label">${label}</span>
@@ -438,17 +750,17 @@ function renderStats() {
 }
 
 function renderLeaderboard() {
-  const difficulty = getDifficulty();
-  const difficultyLabel = difficulty.charAt(0).toUpperCase() + difficulty.slice(1);
-  elements.leaderboardTitle.textContent = `${difficultyLabel} Leaderboard`;
+  const copy = getCopy();
+  const difficultyKey = getDifficultyStorageKey();
+  elements.leaderboardTitle.textContent = copy.leaderboardTitle(getDifficultyLabel(getDifficulty()));
 
   if (!state.leaderboard.length) {
-    elements.leaderboard.innerHTML = "<p class='muted'>No scores yet for this difficulty.</p>";
+    elements.leaderboard.innerHTML = `<p class="muted">${copy.noScores()}</p>`;
     return;
   }
 
   const totalVisible = getOverallDifficultyProgress().visible || 1;
-  const previousRank = state.previousRanks[difficulty];
+  const previousRank = state.previousRanks[difficultyKey];
 
   elements.leaderboard.innerHTML = state.leaderboard.map((row) => {
     let status = "";
@@ -460,14 +772,14 @@ function renderLeaderboard() {
       } else if (previousRank && row.rank > previousRank) {
         status = "⬇";
       }
-      state.previousRanks[difficulty] = row.rank;
+      state.previousRanks[difficultyKey] = row.rank;
     }
     const percent = Math.round((row.solvedCount / totalVisible) * 100);
     return `
       <article class="leaderboard-row${row.userId === state.currentUser?.id ? " current-user" : ""}">
         <div>
           <div><strong>${row.name}</strong><span class="leaderboard-status">${status}</span></div>
-          <div class="leaderboard-rank">Rank #${row.rank}</div>
+          <div class="leaderboard-rank">${copy.rankLabel(row.rank)}</div>
         </div>
         <div class="chapter-button-meta">${percent}%</div>
       </article>
@@ -478,9 +790,11 @@ function renderLeaderboard() {
 }
 
 function renderRecommendations() {
+  const copy = getCopy();
+  const data = getData();
   elements.dbStatus.textContent = state.dbConnected
-    ? "Postgres connected"
-    : "Database not connected yet";
+    ? copy.dbConnected
+    : copy.dbDisconnected;
 
   const difficulty = getDifficulty();
   const tailoredChapters = data.chapters
@@ -499,22 +813,26 @@ function renderRecommendations() {
     .slice(0, 4);
 
   if (!tailoredChapters.length) {
-    elements.recommendations.innerHTML = `<p class='muted'>${difficultyDescriptions[difficulty]} Answer a few words and this panel will start recommending chapters and verses to review.</p>`;
+    elements.recommendations.innerHTML = `<p class="muted">${copy.recommendationsEmpty(getDifficultyDescription(difficulty))}</p>`;
     return;
   }
 
   elements.recommendations.innerHTML = tailoredChapters.map((chapter) => `
     <article class="recommendation-item">
-      <strong>John ${chapter.chapterId}</strong>
-      <div>${difficulty.charAt(0).toUpperCase() + difficulty.slice(1)} completion: ${chapter.completion}%</div>
-      <div>Solved blanks: ${chapter.solvedBlanks} / ${chapter.visibleBlanks}</div>
-      <div>Start again at verse: ${chapter.firstUnsolvedVerse ?? "Completed"}</div>
+      <strong>${formatChapterLabel(chapter.chapterId)}</strong>
+      <div>${copy.recommendationCompletion(getDifficultyLabel(difficulty), chapter.completion)}</div>
+      <div>${copy.recommendationSolved(chapter.solvedBlanks, chapter.visibleBlanks)}</div>
+      <div>${copy.recommendationVerse(chapter.firstUnsolvedVerse)}</div>
     </article>
   `).join("");
 }
 
 function buildMetaText(result) {
-  return `Right ${result.correctCount} time${result.correctCount === 1 ? "" : "s"} • ${result.correctPercentage}% correct / ${result.incorrectPercentage}% incorrect`;
+  return getCopy().metaPerformance(
+    result.correctCount,
+    result.correctPercentage,
+    result.incorrectPercentage
+  );
 }
 
 function createAnswerMeta() {
@@ -525,6 +843,7 @@ function createAnswerMeta() {
 }
 
 function applyProgressToInput(input, meta, progress, displayValue) {
+  const copy = getCopy();
   input.classList.remove("correct", "incorrect");
   input.disabled = false;
   input.placeholder = "";
@@ -539,7 +858,7 @@ function applyProgressToInput(input, meta, progress, displayValue) {
     input.classList.add("correct");
     input.disabled = true;
     meta.className = "answer-meta correct";
-    meta.textContent = progress.metaText || "Correct";
+    meta.textContent = progress.metaText || copy.correct;
     return;
   }
   input.value = "";
@@ -547,12 +866,12 @@ function applyProgressToInput(input, meta, progress, displayValue) {
   meta.className = "answer-meta incorrect";
   if (progress.hintLevel === 1) {
     input.placeholder = displayValue.charAt(0);
-    meta.textContent = `${progress.metaText} • Hint: starts with ${displayValue.charAt(0)}`;
+    meta.textContent = `${progress.metaText} • ${copy.hintStartsWith(displayValue.charAt(0))}`;
     return;
   }
   if (progress.hintLevel >= 2) {
     input.placeholder = displayValue;
-    meta.textContent = `${progress.metaText} • Correct word: ${displayValue}`;
+    meta.textContent = `${progress.metaText} • ${copy.correctWord(displayValue)}`;
   }
 }
 
@@ -578,7 +897,7 @@ async function submitAnswer(input) {
       method: "POST",
       body: JSON.stringify({
         userId: state.currentUser.id,
-        difficulty: getDifficulty(),
+        difficulty: getDifficultyStorageKey(),
         chapterId,
         verseId,
         tokenIndex,
@@ -607,6 +926,7 @@ async function submitAnswer(input) {
       };
       setTokenProgress(chapterId, verseId, tokenIndex, progress);
       setTokenDraft(chapterId, verseId, tokenIndex, "");
+      state.pendingFocusKey = `${chapterId}:${verseId}:${tokenIndex}`;
       applyProgressToInput(input, meta, progress, input.dataset.displayValue);
       input.value = "";
       input.focus();
@@ -616,7 +936,7 @@ async function submitAnswer(input) {
     render();
   } catch (error) {
     meta.className = "answer-meta incorrect";
-    meta.textContent = error.message || "Could not save that answer yet.";
+    meta.textContent = error.message || getCopy().answerSaveError;
   }
 }
 
@@ -644,7 +964,8 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   input.dataset.chapterId = String(chapterId);
   input.dataset.verseId = String(verseId);
   input.dataset.tokenIndex = String(tokenIndex);
-  input.setAttribute("aria-label", `John ${chapterId}:${verseId} word`);
+  input.dataset.focusKey = `${chapterId}:${verseId}:${tokenIndex}`;
+  input.setAttribute("aria-label", getCopy().wordAriaLabel(chapterId, verseId));
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -662,8 +983,11 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
 function renderQuiz() {
   const chapter = getChapter();
   const difficulty = getDifficulty();
-  elements.chapterTitle.textContent = `John ${chapter.id}`;
-  elements.chapterSummary.textContent = `${difficultyDescriptions[difficulty]} ${chapter.verses.length} verses in this chapter.`;
+  elements.chapterTitle.textContent = getCopy().formatChapterTitle(chapter.id);
+  elements.chapterSummary.textContent = getCopy().chapterSummary(
+    getDifficultyDescription(difficulty),
+    chapter.verses.length
+  );
   elements.chapterQuiz.innerHTML = "";
 
   chapter.verses.forEach((verse) => {
@@ -678,6 +1002,14 @@ function renderQuiz() {
     });
     elements.chapterQuiz.append(verseElement);
   });
+
+  if (state.pendingFocusKey) {
+    const target = document.querySelector(`[data-focus-key="${state.pendingFocusKey}"]`);
+    if (target instanceof HTMLInputElement) {
+      target.focus();
+    }
+    state.pendingFocusKey = null;
+  }
 }
 
 function resetCurrentChapter() {
@@ -699,11 +1031,12 @@ function autosaveVisibleDrafts() {
 
 async function handleDifficultyChange() {
   setDifficulty(getDifficulty());
-  await Promise.all([hydrateSolvedProgress(), loadLeaderboard()]);
+  await Promise.all([hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]);
   render();
 }
 
 function render() {
+  renderStaticCopy();
   renderAuth();
   if (!state.currentUser?.id) return;
   renderChapterList();
@@ -714,8 +1047,35 @@ function render() {
   renderQuiz();
 }
 
+function setLanguage(language, options = {}) {
+  const nextLanguage = language === "ko" ? "ko" : "en";
+  if (state.currentLanguage === nextLanguage && !options.force) {
+    renderStaticCopy();
+    render();
+    return;
+  }
+
+  state.currentLanguage = nextLanguage;
+  saveLanguage();
+  renderStaticCopy();
+
+  if (state.currentUser) {
+    state.currentUser.language = nextLanguage;
+    state.currentUser.preferredLanguage = nextLanguage;
+    saveSession();
+  }
+
+  if (!state.currentUser?.id) {
+    render();
+    return;
+  }
+
+  Promise.all([persistUserPreferences(), hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]).finally(render);
+}
+
 elements.authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  setLanguage(elements.authLanguage.value, { force: true });
   try {
     await login(elements.authName.value.trim(), elements.authEmail.value.trim());
   } catch (error) {
@@ -723,6 +1083,10 @@ elements.authForm.addEventListener("submit", async (event) => {
   }
 });
 
+elements.authLanguage.addEventListener("change", () => setLanguage(elements.authLanguage.value));
+elements.languageToggleButtons.forEach((button) => {
+  button.addEventListener("click", () => setLanguage(button.dataset.languageToggle));
+});
 elements.signOut.addEventListener("click", signOut);
 elements.difficultySelect.addEventListener("change", handleDifficultyChange);
 elements.resetChapter.addEventListener("click", resetCurrentChapter);
@@ -731,13 +1095,13 @@ setInterval(autosaveVisibleDrafts, autosaveIntervalMs);
 window.addEventListener("beforeunload", autosaveVisibleDrafts);
 
 const savedDifficulty = localStorage.getItem(difficultyStorageKey);
-if (savedDifficulty && difficultyDescriptions[savedDifficulty]) {
+if (savedDifficulty && getCopy().difficultyDescriptions[savedDifficulty]) {
   elements.difficultySelect.value = savedDifficulty;
 } else {
   elements.difficultySelect.value = "easy";
 }
 
-renderAuth();
+render();
 
 if (state.currentUser?.id) {
   Promise.all([hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]).finally(render);
