@@ -64,7 +64,7 @@ const uiCopy = {
     documentTitle: "John NIV Memory Builder",
     headerEyebrow: "Memorize John",
     siteTitle: "John NIV Fill-In Quiz",
-    headerCopy: "Almost every word is hidden. Type each missing word, check it immediately, and build a record of where John is easiest or hardest for you.",
+    headerCopy: "",
     authSectionLabel: "Sign In",
     authTitle: "Start Memorizing John",
     authCopy: "Enter your name and email once. Your name will be used on the leaderboard.",
@@ -136,7 +136,7 @@ const uiCopy = {
     documentTitle: "요한복음 개역한글 암송 퀴즈",
     headerEyebrow: "요한복음 암송",
     siteTitle: "요한복음 개역한글 빈칸 퀴즈",
-    headerCopy: "거의 모든 단어가 가려집니다. 빈칸을 하나씩 입력하고 바로 확인하면서, 요한복음에서 어디가 가장 쉽고 어려운지 기록해 보세요.",
+    headerCopy: "",
     authSectionLabel: "시작하기",
     authTitle: "요한복음 암송 시작",
     authCopy: "이름과 이메일을 한 번만 입력하세요. 이름은 리더보드에 표시됩니다.",
@@ -641,6 +641,7 @@ function renderStaticCopy() {
   elements.headerEyebrow.textContent = copy.headerEyebrow;
   elements.siteTitle.textContent = copy.siteTitle;
   elements.headerCopy.textContent = copy.headerCopy;
+  elements.headerCopy.hidden = !copy.headerCopy;
   elements.authSectionLabel.textContent = copy.authSectionLabel;
   elements.authTitle.textContent = copy.authTitle;
   elements.authCopy.textContent = copy.authCopy;
