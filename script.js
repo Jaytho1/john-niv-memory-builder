@@ -52,6 +52,7 @@ const elements = {
   difficultySelect: document.querySelector("#difficulty-select"),
   chapterResetLabel: document.querySelector("#chapter-reset-label"),
   resetChapter: document.querySelector("#reset-chapter"),
+  nextChapter: document.querySelector("#next-chapter"),
   chapterTitle: document.querySelector("#chapter-title"),
   chapterSummary: document.querySelector("#chapter-summary"),
   chapterQuiz: document.querySelector("#chapter-quiz"),
@@ -82,6 +83,7 @@ const uiCopy = {
     difficultyLabel: "Difficulty",
     chapterResetLabel: "Chapter reset",
     resetChapter: "Reset this chapter",
+    nextChapter: "Next chapter",
     languageToggleLabel: "Language toggle",
     dbChecking: "Checking database status...",
     dbConnected: "Postgres connected",
@@ -123,11 +125,11 @@ const uiCopy = {
     recommendationVerse: (verseId) => `Start again at verse: ${verseId ?? "Completed"}`,
     solvedPreviously: "Solved previously",
     correct: "Correct",
-    hintStartsWith: (value) => `Hint: starts with ${value}`,
-    correctWord: (value) => `Correct word: ${value}`,
+    hintStartsWith: (value) => `Hint: ${value}`,
+    correctWord: (value) => `Answer: ${value}`,
     answerSaveError: "Could not save that answer yet.",
     wordAriaLabel: (chapterId, verseId) => `John ${chapterId}:${verseId} word`,
-    metaPerformance: (correctCount, correctPercentage, incorrectPercentage) => `Right ${correctCount} time${correctCount === 1 ? "" : "s"} • ${correctPercentage}% correct / ${incorrectPercentage}% incorrect`,
+    metaPerformance: (correctCount, accuracyPercentage) => `Right ${correctCount} ${correctCount === 1 ? "time" : "times"} (${accuracyPercentage}% accuracy)`,
   },
   ko: {
     htmlLang: "ko",
@@ -153,6 +155,7 @@ const uiCopy = {
     difficultyLabel: "난이도",
     chapterResetLabel: "장 초기화",
     resetChapter: "이 장 다시 시작",
+    nextChapter: "다음 장",
     languageToggleLabel: "언어 전환",
     dbChecking: "데이터베이스 상태 확인 중...",
     dbConnected: "Postgres 연결됨",
@@ -194,11 +197,11 @@ const uiCopy = {
     recommendationVerse: (verseId) => `다시 시작할 절: ${verseId ?? "완료"}`,
     solvedPreviously: "이전에 맞춤",
     correct: "정답",
-    hintStartsWith: (value) => `힌트: ${value}(으)로 시작`,
-    correctWord: (value) => `정답 단어: ${value}`,
+    hintStartsWith: (value) => `힌트: ${value}`,
+    correctWord: (value) => `정답: ${value}`,
     answerSaveError: "아직 이 답을 저장하지 못했습니다.",
     wordAriaLabel: (chapterId, verseId) => `요한복음 ${chapterId}:${verseId} 단어`,
-    metaPerformance: (correctCount, correctPercentage, incorrectPercentage) => `정답 ${correctCount}회 • 정답 ${correctPercentage}% / 오답 ${incorrectPercentage}%`,
+    metaPerformance: (correctCount, accuracyPercentage) => `정답 ${correctCount}회 (정확도 ${accuracyPercentage}%)`,
   },
 };
 
@@ -317,6 +320,13 @@ function getData() {
 
 function getChapter() {
   return getData().chapters.find((chapter) => chapter.id === state.selectedChapterId);
+}
+
+function getNextChapter() {
+  const chapters = getData().chapters;
+  const currentIndex = chapters.findIndex((chapter) => chapter.id === state.selectedChapterId);
+  if (currentIndex === -1) return null;
+  return chapters[currentIndex + 1] ?? null;
 }
 
 function getDifficulty() {
@@ -534,8 +544,9 @@ function signOut() {
 async function loadSummary() {
   if (!state.currentUser?.id) return;
   try {
-    const difficulty = encodeURIComponent(getDifficultyStorageKey());
-    const payload = await api(`/api/progress/summary?userId=${state.currentUser.id}&difficulty=${difficulty}`);
+    const difficulty = encodeURIComponent(getDifficulty());
+    const language = encodeURIComponent(state.currentLanguage);
+    const payload = await api(`/api/progress/summary?userId=${state.currentUser.id}&language=${language}&difficulty=${difficulty}`);
     state.summary = payload;
     state.dbConnected = payload.db.connected;
   } catch {
@@ -569,9 +580,10 @@ async function persistUserPreferences() {
 
 async function loadLeaderboard() {
   if (!state.currentUser?.id) return;
-  const difficulty = encodeURIComponent(getDifficultyStorageKey());
+  const difficulty = encodeURIComponent(getDifficulty());
+  const language = encodeURIComponent(state.currentLanguage);
   try {
-    const payload = await api(`/api/leaderboard?difficulty=${difficulty}&userId=${state.currentUser.id}`);
+    const payload = await api(`/api/leaderboard?difficulty=${difficulty}&language=${language}&userId=${state.currentUser.id}`);
     state.leaderboard = payload.rows;
     state.dbConnected = payload.db.connected;
   } catch {
@@ -582,8 +594,9 @@ async function loadLeaderboard() {
 async function hydrateSolvedProgress() {
   if (!state.currentUser?.id) return;
   try {
-    const difficulty = encodeURIComponent(getDifficultyStorageKey());
-    const payload = await api(`/api/user-progress?userId=${state.currentUser.id}&difficulty=${difficulty}`);
+    const difficulty = encodeURIComponent(getDifficulty());
+    const language = encodeURIComponent(state.currentLanguage);
+    const payload = await api(`/api/user-progress?userId=${state.currentUser.id}&language=${language}&difficulty=${difficulty}`);
     const data = getData();
     payload.rows.forEach((row) => {
       const token = data.chapters
@@ -763,11 +776,18 @@ function renderLeaderboard() {
   const previousRank = state.previousRanks[difficultyKey];
 
   elements.leaderboard.innerHTML = state.leaderboard.map((row) => {
+    let medal = "";
+    if (row.rank === 1) {
+      medal = "🥇";
+    } else if (row.rank === 2) {
+      medal = "🥈";
+    } else if (row.rank === 3) {
+      medal = "🥉";
+    }
+
     let status = "";
     if (row.userId === state.currentUser?.id) {
-      if (row.rank === 1) {
-        status = "♛";
-      } else if (previousRank && row.rank < previousRank) {
+      if (previousRank && row.rank < previousRank) {
         status = "🔥";
       } else if (previousRank && row.rank > previousRank) {
         status = "⬇";
@@ -778,7 +798,7 @@ function renderLeaderboard() {
     return `
       <article class="leaderboard-row${row.userId === state.currentUser?.id ? " current-user" : ""}">
         <div>
-          <div><strong>${row.name}</strong><span class="leaderboard-status">${status}</span></div>
+          <div><strong>${row.name}</strong><span class="leaderboard-status">${medal}${status}</span></div>
           <div class="leaderboard-rank">${copy.rankLabel(row.rank)}</div>
         </div>
         <div class="chapter-button-meta">${percent}%</div>
@@ -830,8 +850,7 @@ function renderRecommendations() {
 function buildMetaText(result) {
   return getCopy().metaPerformance(
     result.correctCount,
-    result.correctPercentage,
-    result.incorrectPercentage
+    result.correctPercentage
   );
 }
 
@@ -842,6 +861,80 @@ function createAnswerMeta() {
   return meta;
 }
 
+function setMetaContent(meta, { status = "", detail = "", hint = "" } = {}) {
+  const classNames = ["answer-meta"];
+  if (status) classNames.push(status);
+  if (hint) classNames.push("has-hint");
+  meta.className = classNames.join(" ");
+  meta.innerHTML = "";
+
+  if (detail) {
+    const detailSpan = document.createElement("span");
+    detailSpan.className = "answer-meta-detail";
+    detailSpan.textContent = detail;
+    meta.append(detailSpan);
+  }
+
+  if (hint) {
+    const hintSpan = document.createElement("span");
+    hintSpan.className = "answer-meta-hint";
+    hintSpan.textContent = hint;
+    meta.append(hintSpan);
+  }
+}
+
+function focusQuizInput(input) {
+  if (!(input instanceof HTMLInputElement)) return;
+  input.scrollIntoView({ block: "nearest", inline: "nearest" });
+  input.focus();
+}
+
+function findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex) {
+  const chapter = getChapter();
+  const difficulty = getDifficulty();
+  let passedCurrent = false;
+  let nextFocusKey = null;
+
+  for (const verse of chapter.verses) {
+    verse.tokens.forEach((token, currentTokenIndex) => {
+      if (token.type === "space" || token.type === "punct") return;
+      if (!shouldHideToken(verse.tokens, currentTokenIndex, difficulty)) return;
+
+      if (!passedCurrent) {
+        if (verse.id === verseId && currentTokenIndex === tokenIndex && chapter.id === chapterId) {
+          passedCurrent = true;
+        }
+        return;
+      }
+
+      const progress = getTokenProgress(chapter.id, verse.id, currentTokenIndex);
+      if (!progress?.solved && !nextFocusKey) {
+        nextFocusKey = `${chapter.id}:${verse.id}:${currentTokenIndex}`;
+      }
+    });
+
+    if (nextFocusKey) return nextFocusKey;
+  }
+
+  return nextFocusKey;
+}
+
+function maybeSubmitOnExactMatch(input) {
+  if (
+    !(input instanceof HTMLInputElement) ||
+    input.disabled ||
+    input.dataset.isComposing === "true" ||
+    input.dataset.submitting === "true"
+  ) {
+    return;
+  }
+
+  const answer = normalizeAnswer(input.value);
+  if (answer && answer === input.dataset.answer) {
+    submitAnswer(input);
+  }
+}
+
 function applyProgressToInput(input, meta, progress, displayValue) {
   const copy = getCopy();
   input.classList.remove("correct", "incorrect");
@@ -849,34 +942,42 @@ function applyProgressToInput(input, meta, progress, displayValue) {
   input.placeholder = "";
   if (!progress) {
     if (!input.value) input.value = input.dataset.savedDraft || "";
-    meta.className = "answer-meta";
-    meta.textContent = "";
+    setMetaContent(meta);
     return;
   }
   if (progress.solved) {
     input.value = progress.value;
     input.classList.add("correct");
     input.disabled = true;
-    meta.className = "answer-meta correct";
-    meta.textContent = progress.metaText || copy.correct;
+    setMetaContent(meta, {
+      status: "correct",
+      detail: progress.metaText || copy.correct,
+    });
     return;
   }
   input.value = "";
   input.classList.add("incorrect");
-  meta.className = "answer-meta incorrect";
   if (progress.hintLevel === 1) {
     input.placeholder = displayValue.charAt(0);
-    meta.textContent = `${progress.metaText} • ${copy.hintStartsWith(displayValue.charAt(0))}`;
+    setMetaContent(meta, {
+      status: "incorrect",
+      hint: copy.hintStartsWith(displayValue.charAt(0)),
+    });
     return;
   }
   if (progress.hintLevel >= 2) {
     input.placeholder = displayValue;
-    meta.textContent = `${progress.metaText} • ${copy.correctWord(displayValue)}`;
+    setMetaContent(meta, {
+      status: "incorrect",
+      hint: copy.correctWord(displayValue),
+    });
+    return;
   }
+  setMetaContent(meta, { status: "incorrect" });
 }
 
 async function submitAnswer(input) {
-  if (input.disabled || !state.currentUser?.id) return;
+  if (input.disabled || !state.currentUser?.id || input.dataset.submitting === "true") return;
   const answer = normalizeAnswer(input.value);
   const expected = input.dataset.answer;
   const chapterId = Number(input.dataset.chapterId);
@@ -887,17 +988,18 @@ async function submitAnswer(input) {
   if (!answer) {
     input.classList.remove("correct", "incorrect");
     input.placeholder = "";
-    meta.className = "answer-meta";
-    meta.textContent = "";
+    setMetaContent(meta);
     return;
   }
 
+  input.dataset.submitting = "true";
   try {
     const result = await api("/api/attempt", {
       method: "POST",
       body: JSON.stringify({
         userId: state.currentUser.id,
-        difficulty: getDifficultyStorageKey(),
+        language: state.currentLanguage,
+        difficulty: getDifficulty(),
         chapterId,
         verseId,
         tokenIndex,
@@ -916,6 +1018,7 @@ async function submitAnswer(input) {
       };
       setTokenProgress(chapterId, verseId, tokenIndex, progress);
       setTokenDraft(chapterId, verseId, tokenIndex, "");
+      state.pendingFocusKey = findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex);
       applyProgressToInput(input, meta, progress, input.dataset.displayValue);
     } else {
       const progress = {
@@ -929,14 +1032,18 @@ async function submitAnswer(input) {
       state.pendingFocusKey = `${chapterId}:${verseId}:${tokenIndex}`;
       applyProgressToInput(input, meta, progress, input.dataset.displayValue);
       input.value = "";
-      input.focus();
+      focusQuizInput(input);
     }
 
     await Promise.all([loadSummary(), loadLeaderboard()]);
     render();
   } catch (error) {
-    meta.className = "answer-meta incorrect";
-    meta.textContent = error.message || getCopy().answerSaveError;
+    setMetaContent(meta, {
+      status: "incorrect",
+      detail: error.message || getCopy().answerSaveError,
+    });
+  } finally {
+    input.dataset.submitting = "false";
   }
 }
 
@@ -965,6 +1072,8 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   input.dataset.verseId = String(verseId);
   input.dataset.tokenIndex = String(tokenIndex);
   input.dataset.focusKey = `${chapterId}:${verseId}:${tokenIndex}`;
+  input.dataset.isComposing = "false";
+  input.dataset.submitting = "false";
   input.setAttribute("aria-label", getCopy().wordAriaLabel(chapterId, verseId));
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -972,7 +1081,18 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
       submitAnswer(input);
     }
   });
-  input.addEventListener("input", () => setTokenDraft(chapterId, verseId, tokenIndex, input.value.trim()));
+  input.addEventListener("compositionstart", () => {
+    input.dataset.isComposing = "true";
+  });
+  input.addEventListener("compositionend", () => {
+    input.dataset.isComposing = "false";
+    setTokenDraft(chapterId, verseId, tokenIndex, input.value.trim());
+    maybeSubmitOnExactMatch(input);
+  });
+  input.addEventListener("input", () => {
+    setTokenDraft(chapterId, verseId, tokenIndex, input.value.trim());
+    maybeSubmitOnExactMatch(input);
+  });
   input.addEventListener("blur", () => submitAnswer(input));
   const meta = createAnswerMeta();
   applyProgressToInput(input, meta, getTokenProgress(chapterId, verseId, tokenIndex), token.value);
@@ -982,12 +1102,17 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
 
 function renderQuiz() {
   const chapter = getChapter();
+  const nextChapter = getNextChapter();
   const difficulty = getDifficulty();
   elements.chapterTitle.textContent = getCopy().formatChapterTitle(chapter.id);
   elements.chapterSummary.textContent = getCopy().chapterSummary(
     getDifficultyDescription(difficulty),
     chapter.verses.length
   );
+  elements.nextChapter.hidden = !nextChapter;
+  elements.nextChapter.textContent = nextChapter
+    ? `${getCopy().nextChapter}: ${formatChapterLabel(nextChapter.id)}`
+    : getCopy().nextChapter;
   elements.chapterQuiz.innerHTML = "";
 
   chapter.verses.forEach((verse) => {
@@ -1006,15 +1131,32 @@ function renderQuiz() {
   if (state.pendingFocusKey) {
     const target = document.querySelector(`[data-focus-key="${state.pendingFocusKey}"]`);
     if (target instanceof HTMLInputElement) {
-      target.focus();
+      focusQuizInput(target);
     }
     state.pendingFocusKey = null;
   }
 }
 
-function resetCurrentChapter() {
-  clearChapterProgress(state.selectedChapterId);
-  render();
+async function resetCurrentChapter() {
+  if (!state.currentUser?.id) return;
+
+  try {
+    await api("/api/reset-chapter", {
+      method: "POST",
+      body: JSON.stringify({
+        userId: state.currentUser.id,
+        language: state.currentLanguage,
+        difficulty: getDifficulty(),
+        chapterId: state.selectedChapterId,
+      }),
+    });
+
+    clearChapterProgress(state.selectedChapterId);
+    await Promise.all([hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]);
+    render();
+  } catch (error) {
+    elements.dbStatus.textContent = error.message || getCopy().dbAnalyticsError;
+  }
 }
 
 function autosaveVisibleDrafts() {
@@ -1090,6 +1232,13 @@ elements.languageToggleButtons.forEach((button) => {
 elements.signOut.addEventListener("click", signOut);
 elements.difficultySelect.addEventListener("change", handleDifficultyChange);
 elements.resetChapter.addEventListener("click", resetCurrentChapter);
+elements.nextChapter.addEventListener("click", () => {
+  const nextChapter = getNextChapter();
+  if (!nextChapter) return;
+  state.selectedChapterId = nextChapter.id;
+  render();
+  elements.chapterTitle.scrollIntoView({ block: "start", behavior: "smooth" });
+});
 
 setInterval(autosaveVisibleDrafts, autosaveIntervalMs);
 window.addEventListener("beforeunload", autosaveVisibleDrafts);

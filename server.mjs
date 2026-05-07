@@ -67,6 +67,7 @@ async function initDb() {
     create table if not exists word_attempts (
       id bigserial primary key,
       user_id bigint references users(id),
+      language text not null default 'en',
       difficulty text,
       chapter_id integer not null,
       verse_id integer not null,
@@ -84,21 +85,85 @@ async function initDb() {
   `);
   await pool.query(`
     alter table word_attempts
+      add column if not exists language text not null default 'en';
+  `);
+  await pool.query(`
+    alter table word_attempts
       add column if not exists difficulty text;
+  `);
+
+  await pool.query(`
+    update word_attempts
+    set
+      language = split_part(difficulty, ':', 1),
+      difficulty = split_part(difficulty, ':', 2)
+    where difficulty like 'en:%' or difficulty like 'ko:%';
   `);
 
   await pool.query(`
     create table if not exists solved_words (
       id bigserial primary key,
       user_id bigint not null references users(id),
+      language text not null default 'en',
       difficulty text not null,
       chapter_id integer not null,
       verse_id integer not null,
       token_index integer not null,
       expected_word text not null,
       created_at timestamptz not null default now(),
-      unique (user_id, difficulty, chapter_id, verse_id, token_index, expected_word)
+      constraint solved_words_user_progress_unique
+        unique (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word)
     );
+  `);
+
+  await pool.query(`
+    alter table solved_words
+      add column if not exists language text not null default 'en';
+  `);
+
+  await pool.query(`
+    update solved_words
+    set
+      language = split_part(difficulty, ':', 1),
+      difficulty = split_part(difficulty, ':', 2)
+    where difficulty like 'en:%' or difficulty like 'ko:%';
+  `);
+
+  await pool.query(`
+    do $$
+    declare
+      existing_constraint text;
+    begin
+      select tc.constraint_name
+      into existing_constraint
+      from information_schema.table_constraints tc
+      join information_schema.key_column_usage kcu
+        on tc.constraint_name = kcu.constraint_name
+       and tc.table_schema = kcu.table_schema
+      where tc.table_schema = 'public'
+        and tc.table_name = 'solved_words'
+        and tc.constraint_type = 'UNIQUE'
+      group by tc.constraint_name
+      having array_agg(kcu.column_name::text order by kcu.ordinal_position)
+        = array['user_id', 'difficulty', 'chapter_id', 'verse_id', 'token_index', 'expected_word']
+      limit 1;
+
+      if existing_constraint is not null then
+        execute format('alter table solved_words drop constraint %I', existing_constraint);
+      end if;
+
+      if not exists (
+        select 1
+        from information_schema.table_constraints
+        where table_schema = 'public'
+          and table_name = 'solved_words'
+          and constraint_name = 'solved_words_user_progress_unique'
+      ) then
+        alter table solved_words
+          add constraint solved_words_user_progress_unique
+          unique (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word);
+      end if;
+    end $$;
   `);
 
   dbConnected = true;
@@ -127,7 +192,7 @@ async function readJsonBody(request) {
 }
 
 function rememberAttempt(attempt) {
-  const key = `${attempt.chapterId}:${attempt.verseId}:${attempt.tokenIndex}:${attempt.expectedWord}`;
+  const key = getAttemptIdentity(attempt);
   const current = memoryAttempts.get(key) || [];
   current.push(attempt);
   memoryAttempts.set(key, current);
@@ -150,6 +215,18 @@ function normalizeLanguage(value) {
   return value === "ko" ? "ko" : "en";
 }
 
+function getAttemptIdentity(attempt) {
+  return [
+    attempt.userId ?? "guest",
+    attempt.language ?? "en",
+    attempt.difficulty ?? "",
+    attempt.chapterId,
+    attempt.verseId,
+    attempt.tokenIndex,
+    attempt.expectedWord,
+  ].join(":");
+}
+
 function getOrCreateMemoryUser(name, email, preferredLanguage) {
   const existing = memoryUsers.get(email);
   if (existing) {
@@ -169,19 +246,25 @@ function getOrCreateMemoryUser(name, email, preferredLanguage) {
   return user;
 }
 
-function getMemorySummary(difficulty = "") {
+function getMemorySummary(userId, difficulty = "", language = "en") {
   const chapterStats = new Map();
 
-  for (const [key, attempts] of memoryAttempts.entries()) {
-    const matchingAttempts = difficulty
-      ? attempts.filter((attempt) => attempt.difficulty === difficulty)
-      : attempts;
+  for (const attempts of memoryAttempts.values()) {
+    const matchingAttempts = attempts.filter((attempt) => {
+      if (userId && attempt.userId !== userId) {
+        return false;
+      }
+      if (difficulty && attempt.difficulty !== difficulty) {
+        return false;
+      }
+      return (attempt.language || "en") === language;
+    });
 
     if (!matchingAttempts.length) {
       continue;
     }
 
-    const [chapterId, verseId] = key.split(":").map((value) => Number(value));
+    const { chapterId, verseId } = matchingAttempts[0];
     const stats = chapterStats.get(chapterId) || {
       chapterId,
       attempts: 0,
@@ -191,10 +274,11 @@ function getMemorySummary(difficulty = "") {
     };
 
     matchingAttempts.forEach((attempt) => {
+      const solvedKey = getAttemptIdentity(attempt);
       stats.attempts += 1;
       if (attempt.isCorrect) {
         stats.correct += 1;
-        stats.correctWords.add(key);
+        stats.correctWords.add(solvedKey);
       }
 
       const verse = stats.verseStats.get(verseId) || { verseId, attempts: 0, correct: 0 };
@@ -225,9 +309,12 @@ function getMemorySummary(difficulty = "") {
     .sort((a, b) => a.chapterId - b.chapterId);
 }
 
-async function getDbSummary(userId, difficulty = "") {
+async function getDbSummary(userId, difficulty = "", language = "en") {
   const filters = ["user_id = $1"];
   const params = [userId];
+
+  params.push(language);
+  filters.push(`language = $${params.length}`);
 
   if (difficulty) {
     params.push(difficulty);
@@ -283,6 +370,23 @@ async function getDbSummary(userId, difficulty = "") {
     correctUniqueWords: Number(row.correct_unique_words),
     hardestVerse: hardestVerseByChapter.get(Number(row.chapter_id)) ?? null,
   }));
+}
+
+function removeMemoryChapterProgress(userId, difficulty, language, chapterId) {
+  for (const [key, attempts] of memoryAttempts.entries()) {
+    const remaining = attempts.filter((attempt) => !(
+      attempt.userId === userId
+      && attempt.difficulty === difficulty
+      && (attempt.language || "en") === language
+      && attempt.chapterId === chapterId
+    ));
+
+    if (remaining.length) {
+      memoryAttempts.set(key, remaining);
+    } else {
+      memoryAttempts.delete(key);
+    }
+  }
 }
 
 async function handleLogin(request, response) {
@@ -399,6 +503,7 @@ async function handleUserPreferences(request, response) {
 async function handleUserProgress(request, response, url) {
   const userId = Number(url.searchParams.get("userId"));
   const difficulty = String(url.searchParams.get("difficulty") || "");
+  const language = normalizeLanguage(url.searchParams.get("language"));
 
   if (!userId || !difficulty) {
     sendJson(response, 400, { error: "Missing userId or difficulty." });
@@ -409,10 +514,10 @@ async function handleUserProgress(request, response, url) {
     `
       select chapter_id, verse_id, token_index, expected_word
       from solved_words
-      where user_id = $1 and difficulty = $2
+      where user_id = $1 and language = $2 and difficulty = $3
       order by chapter_id, verse_id, token_index;
     `,
-    [userId, difficulty]
+    [userId, language, difficulty]
   );
 
   sendJson(response, 200, {
@@ -427,6 +532,7 @@ async function handleUserProgress(request, response, url) {
 
 async function handleLeaderboard(response, url) {
   const difficulty = String(url.searchParams.get("difficulty") || "");
+  const language = normalizeLanguage(url.searchParams.get("language"));
   if (!difficulty) {
     sendJson(response, 400, { error: "Missing difficulty." });
     return;
@@ -443,7 +549,8 @@ async function handleLeaderboard(response, url) {
         from users
         left join solved_words
           on solved_words.user_id = users.id
-         and solved_words.difficulty = $1
+         and solved_words.language = $1
+         and solved_words.difficulty = $2
         group by users.id, users.name
       )
       select user_id, name, solved_count, rank
@@ -452,7 +559,7 @@ async function handleLeaderboard(response, url) {
       order by rank asc, name asc
       limit 12;
     `,
-    [difficulty]
+    [language, difficulty]
   );
 
   sendJson(response, 200, {
@@ -472,6 +579,7 @@ async function handleLeaderboard(response, url) {
 async function handleAttempt(request, response) {
   const body = await readJsonBody(request);
   const userId = Number(body.userId);
+  const language = normalizeLanguage(body.language);
   const difficulty = String(body.difficulty || "").trim().toLowerCase();
   const expectedWord = String(body.expectedWord || "").trim().toLowerCase();
   const answer = String(body.answer || "").trim().toLowerCase();
@@ -483,6 +591,7 @@ async function handleAttempt(request, response) {
 
   const attempt = {
     userId,
+    language,
     difficulty,
     chapterId: Number(body.chapterId),
     verseId: Number(body.verseId),
@@ -507,11 +616,12 @@ async function handleAttempt(request, response) {
 
     await pool.query(
       `
-        insert into word_attempts (user_id, difficulty, chapter_id, verse_id, token_index, expected_word, answer, is_correct)
-        values ($1, $2, $3, $4, $5, $6, $7, $8);
+        insert into word_attempts (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word, answer, is_correct)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9);
       `,
       [
         attempt.userId,
+        attempt.language,
         attempt.difficulty,
         attempt.chapterId,
         attempt.verseId,
@@ -525,12 +635,13 @@ async function handleAttempt(request, response) {
     if (attempt.isCorrect) {
       await pool.query(
         `
-          insert into solved_words (user_id, difficulty, chapter_id, verse_id, token_index, expected_word)
-          values ($1, $2, $3, $4, $5, $6)
-          on conflict (user_id, difficulty, chapter_id, verse_id, token_index, expected_word) do nothing;
+          insert into solved_words (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word)
+          values ($1, $2, $3, $4, $5, $6, $7)
+          on conflict (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word) do nothing;
         `,
         [
           attempt.userId,
+          attempt.language,
           attempt.difficulty,
           attempt.chapterId,
           attempt.verseId,
@@ -547,15 +658,17 @@ async function handleAttempt(request, response) {
           count(*) filter (where is_correct)::int as correct_count
         from word_attempts
         where user_id = $1
-          and difficulty = $2
-          and chapter_id = $3
-          and verse_id = $4
-          and token_index = $5
-          and expected_word = $6
+          and language = $2
+          and difficulty = $3
+          and chapter_id = $4
+          and verse_id = $5
+          and token_index = $6
+          and expected_word = $7
       ;
       `,
       [
         attempt.userId,
+        attempt.language,
         attempt.difficulty,
         attempt.chapterId,
         attempt.verseId,
@@ -576,7 +689,7 @@ async function handleAttempt(request, response) {
   }
 
   rememberAttempt(attempt);
-  const key = `${attempt.chapterId}:${attempt.verseId}:${attempt.tokenIndex}:${attempt.expectedWord}`;
+  const key = getAttemptIdentity(attempt);
   const attempts = memoryAttempts.get(key) || [];
   const correctCount = attempts.filter((item) => item.isCorrect).length;
 
@@ -587,12 +700,56 @@ async function handleAttempt(request, response) {
   });
 }
 
+async function handleChapterReset(request, response) {
+  const body = await readJsonBody(request);
+  const userId = Number(body.userId);
+  const chapterId = Number(body.chapterId);
+  const difficulty = String(body.difficulty || "").trim().toLowerCase();
+  const language = normalizeLanguage(body.language);
+
+  if (!userId || !chapterId || !difficulty) {
+    sendJson(response, 400, { error: "Missing userId, chapterId, or difficulty." });
+    return;
+  }
+
+  if (pool && dbConnected) {
+    await pool.query(
+      `
+        delete from solved_words
+        where user_id = $1
+          and language = $2
+          and difficulty = $3
+          and chapter_id = $4;
+      `,
+      [userId, language, difficulty, chapterId]
+    );
+
+    await pool.query(
+      `
+        delete from word_attempts
+        where user_id = $1
+          and language = $2
+          and difficulty = $3
+          and chapter_id = $4;
+      `,
+      [userId, language, difficulty, chapterId]
+    );
+
+    sendJson(response, 200, { ok: true, dbConnected: true });
+    return;
+  }
+
+  removeMemoryChapterProgress(userId, difficulty, language, chapterId);
+  sendJson(response, 200, { ok: true, dbConnected: false });
+}
+
 async function handleSummary(response, url) {
   const userId = Number(url.searchParams.get("userId"));
   const difficulty = String(url.searchParams.get("difficulty") || "");
+  const language = normalizeLanguage(url.searchParams.get("language"));
   const chapters = pool && dbConnected && userId
-    ? await getDbSummary(userId, difficulty)
-    : getMemorySummary(difficulty);
+    ? await getDbSummary(userId, difficulty, language)
+    : getMemorySummary(userId, difficulty, language);
 
   const troubleChapters = [...chapters]
     .filter((chapter) => chapter.attempts > 0)
@@ -662,6 +819,11 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/api/progress/summary") {
       await handleSummary(response, url);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/reset-chapter") {
+      await handleChapterReset(request, response);
       return;
     }
 
