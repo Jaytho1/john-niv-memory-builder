@@ -504,13 +504,38 @@ select {
   }
 
   .header-side {
+    width: 100%;
     justify-items: start;
   }
 
-  .header-actions,
+  .header-actions {
+    width: 100%;
+    gap: 0.5rem;
+    justify-content: start;
+  }
+
   .language-toggle,
   .user-chip {
     justify-content: start;
+  }
+
+  .language-toggle {
+    flex: 0 1 auto;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .user-chip {
+    display: contents;
+  }
+
+  #user-name {
+    display: none;
+  }
+
+  .header-actions .secondary-button {
+    padding: 0.7rem 0.85rem;
+    white-space: nowrap;
   }
 
   .hero,
