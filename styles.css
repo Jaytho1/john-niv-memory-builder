@@ -402,6 +402,7 @@ select {
   align-items: center;
   gap: 0.35rem;
   vertical-align: middle;
+  flex-wrap: wrap;
 }
 
 .quiz-input {
@@ -417,6 +418,12 @@ select {
   border: 1px solid var(--line);
   background: #fff;
   color: var(--ink);
+}
+
+.quiz-particle {
+  color: var(--muted);
+  font-size: 0.94rem;
+  white-space: nowrap;
 }
 
 .quiz-input.correct {

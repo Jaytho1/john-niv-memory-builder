@@ -133,9 +133,9 @@ const uiCopy = {
   },
   ko: {
     htmlLang: "ko",
-    documentTitle: "요한복음 개역한글 암송 퀴즈",
+    documentTitle: "요한복음 개역개정 암송 퀴즈",
     headerEyebrow: "요한복음 암송",
-    siteTitle: "요한복음 개역한글 빈칸 퀴즈",
+    siteTitle: "요한복음 개역개정 빈칸 퀴즈",
     headerCopy: "",
     authSectionLabel: "시작하기",
     authTitle: "요한복음 암송 시작",
@@ -249,6 +249,61 @@ const deprioritizedWordsByLanguage = {
   ko: new Set(),
 };
 
+const koreanParticleSuffixes = [
+  "에게로부터",
+  "께로부터",
+  "으로부터",
+  "에서부터",
+  "께서는",
+  "에게서는",
+  "에게서",
+  "에게는",
+  "으로서는",
+  "로서는",
+  "에서는",
+  "으로서",
+  "로부터",
+  "에서의",
+  "에게도",
+  "께서도",
+  "으로의",
+  "까지는",
+  "부터는",
+  "으로는",
+  "와는",
+  "과는",
+  "으로",
+  "로서",
+  "보다",
+  "처럼",
+  "까지",
+  "부터",
+  "마다",
+  "조차",
+  "마저",
+  "께는",
+  "와도",
+  "과도",
+  "에게",
+  "께서",
+  "에서",
+  "에는",
+  "께",
+  "은",
+  "는",
+  "이",
+  "가",
+  "을",
+  "를",
+  "와",
+  "과",
+  "의",
+  "도",
+  "로",
+];
+
+const koreanWordBaseSetCache = new Map();
+
 const state = {
   selectedChapterId: 1,
   summary: null,
@@ -352,6 +407,99 @@ function setDifficulty(value) {
 
 function normalizeAnswer(value) {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function isHangulWord(value) {
+  return /^[가-힣]+$/u.test(value);
+}
+
+function getKoreanWordBaseSet() {
+  if (koreanWordBaseSetCache.has("ko")) {
+    return koreanWordBaseSetCache.get("ko");
+  }
+
+  const baseSet = new Set();
+  const koreanData = datasets.ko;
+  koreanData?.chapters?.forEach((chapter) => {
+    chapter.verses.forEach((verse) => {
+      verse.tokens.forEach((token) => {
+        if (token.type === "word" && typeof token.normalized === "string") {
+          baseSet.add(token.normalized);
+        }
+      });
+    });
+  });
+
+  koreanWordBaseSetCache.set("ko", baseSet);
+  return baseSet;
+}
+
+function getKoreanParticleSplit(tokenValue) {
+  if (!isHangulWord(tokenValue)) {
+    return null;
+  }
+
+  const normalizedValue = tokenValue.toLowerCase();
+  const baseWords = getKoreanWordBaseSet();
+
+  for (const suffix of koreanParticleSuffixes) {
+    if (!normalizedValue.endsWith(suffix)) {
+      continue;
+    }
+
+    const stemLength = normalizedValue.length - suffix.length;
+    if (stemLength <= 0) {
+      continue;
+    }
+
+    const minStemLength = suffix.length === 1 && suffix !== "께" ? 2 : 1;
+    if (stemLength < minStemLength) {
+      continue;
+    }
+
+    const normalizedStem = normalizedValue.slice(0, stemLength);
+    if (!baseWords.has(normalizedStem)) {
+      continue;
+    }
+
+    return {
+      answer: tokenValue.slice(0, stemLength),
+      normalizedAnswer: normalizedStem,
+      particle: tokenValue.slice(stemLength),
+    };
+  }
+
+  return null;
+}
+
+function getBlankPromptForToken(token, language = state.currentLanguage) {
+  if (language === "ko" && token.type === "word") {
+    const split = getKoreanParticleSplit(token.value);
+    if (split) {
+      return split;
+    }
+  }
+
+  return {
+    answer: token.value,
+    normalizedAnswer: token.normalized,
+    particle: "",
+  };
+}
+
+function getSubmittedAnswerForInput(input) {
+  const answer = normalizeAnswer(input.value);
+  if (!answer) {
+    return "";
+  }
+
+  const expected = input.dataset.answer || "";
+  const particle = normalizeAnswer(input.dataset.particle || "");
+  if (particle && answer === `${expected}${particle}`) {
+    return expected;
+  }
+
+  return answer;
 }
 
 function formatChapterLabel(chapterId) {
@@ -604,10 +752,11 @@ async function hydrateSolvedProgress() {
         ?.verses.find((verse) => verse.id === row.verseId)
         ?.tokens[row.tokenIndex];
       if (!token) return;
+      const blankPrompt = getBlankPromptForToken(token, language);
       const key = getTokenKey(row.chapterId, row.verseId, row.tokenIndex);
       state.progress[key] = {
         solved: true,
-        value: token.value,
+        value: blankPrompt.answer,
         hintLevel: 0,
         metaText: getCopy().solvedPreviously,
       };
@@ -978,7 +1127,7 @@ function maybeSubmitOnExactMatch(input) {
     return;
   }
 
-  const answer = normalizeAnswer(input.value);
+  const answer = getSubmittedAnswerForInput(input);
   if (answer && answer === input.dataset.answer) {
     submitAnswer(input);
   }
@@ -1025,14 +1174,19 @@ function applyProgressToInput(input, meta, progress, displayValue) {
   setMetaContent(meta, { status: "incorrect" });
 }
 
+function getAnswerMetaForInput(input) {
+  return input.parentElement?.querySelector(".answer-meta") || null;
+}
+
 async function submitAnswer(input) {
   if (input.disabled || !state.currentUser?.id || input.dataset.submitting === "true") return;
-  const answer = normalizeAnswer(input.value);
+  const answer = getSubmittedAnswerForInput(input);
   const expected = input.dataset.answer;
   const chapterId = Number(input.dataset.chapterId);
   const verseId = Number(input.dataset.verseId);
   const tokenIndex = Number(input.dataset.tokenIndex);
-  const meta = input.nextElementSibling;
+  const meta = getAnswerMetaForInput(input);
+  if (!(meta instanceof HTMLElement)) return;
   setTokenDraft(chapterId, verseId, tokenIndex, input.value.trim());
   if (!answer) {
     input.classList.remove("correct", "incorrect");
@@ -1108,14 +1262,16 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
 
   const wrapper = document.createElement("span");
   wrapper.className = "quiz-word";
+  const blankPrompt = getBlankPromptForToken(token);
   const input = document.createElement("input");
   input.type = "text";
   input.className = "quiz-input";
   input.autocomplete = "off";
   input.spellcheck = false;
-  input.style.setProperty("--chars", String(Math.max(token.value.length, 3)));
-  input.dataset.answer = token.normalized;
-  input.dataset.displayValue = token.value;
+  input.style.setProperty("--chars", String(Math.max(blankPrompt.answer.length, 3)));
+  input.dataset.answer = blankPrompt.normalizedAnswer;
+  input.dataset.displayValue = blankPrompt.answer;
+  input.dataset.particle = blankPrompt.particle;
   input.dataset.savedDraft = getTokenDraft(chapterId, verseId, tokenIndex);
   input.dataset.chapterId = String(chapterId);
   input.dataset.verseId = String(verseId);
@@ -1144,8 +1300,18 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   });
   input.addEventListener("blur", () => submitAnswer(input));
   const meta = createAnswerMeta();
-  applyProgressToInput(input, meta, getTokenProgress(chapterId, verseId, tokenIndex), token.value);
-  wrapper.append(input, meta);
+  applyProgressToInput(input, meta, getTokenProgress(chapterId, verseId, tokenIndex), blankPrompt.answer);
+
+  wrapper.append(input);
+
+  if (blankPrompt.particle) {
+    const particle = document.createElement("span");
+    particle.className = "quiz-particle";
+    particle.textContent = `(${blankPrompt.particle})`;
+    wrapper.append(particle);
+  }
+
+  wrapper.append(meta);
   return wrapper;
 }
 
