@@ -314,8 +314,8 @@ function getCopy() {
   return uiCopy[state.currentLanguage] || uiCopy.en;
 }
 
-function getData() {
-  return datasets[state.currentLanguage] || datasets.en;
+function getData(language = state.currentLanguage) {
+  return datasets[language] || datasets.en;
 }
 
 function getChapter() {
@@ -401,12 +401,12 @@ function clearChapterProgress(chapterId) {
   saveDrafts();
 }
 
-function isKeywordToken(token) {
+function isKeywordToken(token, language = state.currentLanguage) {
   if (token.type !== "word" || !token.testable) {
     return false;
   }
 
-  if (state.currentLanguage === "ko") {
+  if (language === "ko") {
     return token.normalized.length > 1;
   }
 
@@ -414,14 +414,14 @@ function isKeywordToken(token) {
     && !keywordStopwordsByLanguage.en.has(token.normalized);
 }
 
-function scoreTokenForDifficulty(token) {
-  const priorityKeywords = priorityKeywordsByLanguage[state.currentLanguage] || new Set();
-  const deprioritizedWords = deprioritizedWordsByLanguage[state.currentLanguage] || new Set();
+function scoreTokenForDifficulty(token, language = state.currentLanguage) {
+  const priorityKeywords = priorityKeywordsByLanguage[language] || new Set();
+  const deprioritizedWords = deprioritizedWordsByLanguage[language] || new Set();
   let score = token.value.length;
   if (priorityKeywords.has(token.normalized)) {
     score += 100;
   }
-  if (state.currentLanguage === "en" && /^[A-Z]/.test(token.value)) {
+  if (language === "en" && /^[A-Z]/.test(token.value)) {
     score += 8;
   }
   if (deprioritizedWords.has(token.normalized)) {
@@ -455,13 +455,13 @@ function getPerSentenceLimit(difficulty, candidateCount) {
   return candidateCount;
 }
 
-function pickIndicesFromCandidates(candidateIndices, tokens, limit) {
+function pickIndicesFromCandidates(candidateIndices, tokens, limit, language = state.currentLanguage) {
   if (candidateIndices.length <= limit) {
     return candidateIndices;
   }
   return [...candidateIndices]
     .sort((left, right) => (
-      scoreTokenForDifficulty(tokens[right]) - scoreTokenForDifficulty(tokens[left])
+      scoreTokenForDifficulty(tokens[right], language) - scoreTokenForDifficulty(tokens[left], language)
       || tokens[right].value.length - tokens[left].value.length
       || left - right
     ))
@@ -469,7 +469,7 @@ function pickIndicesFromCandidates(candidateIndices, tokens, limit) {
     .sort((left, right) => left - right);
 }
 
-function shouldHideToken(tokens, tokenIndex, difficulty) {
+function shouldHideToken(tokens, tokenIndex, difficulty, language = state.currentLanguage) {
   const token = tokens[tokenIndex];
   if (token.type !== "word" || !token.testable) {
     return false;
@@ -486,12 +486,13 @@ function shouldHideToken(tokens, tokenIndex, difficulty) {
     if (difficulty === "difficult") {
       return currentToken.type === "word" && currentToken.testable;
     }
-    return isKeywordToken(currentToken);
+    return isKeywordToken(currentToken, language);
   });
   return pickIndicesFromCandidates(
     candidateIndices,
     tokens,
-    getPerSentenceLimit(difficulty, candidateIndices.length)
+    getPerSentenceLimit(difficulty, candidateIndices.length),
+    language
   ).includes(tokenIndex);
 }
 
@@ -581,10 +582,9 @@ async function persistUserPreferences() {
 async function loadLeaderboard() {
   if (!state.currentUser?.id) return;
   const difficulty = encodeURIComponent(getDifficulty());
-  const language = encodeURIComponent(state.currentLanguage);
   try {
-    const payload = await api(`/api/leaderboard?difficulty=${difficulty}&language=${language}&userId=${state.currentUser.id}`);
-    state.leaderboard = payload.rows;
+    const payload = await api(`/api/leaderboard?difficulty=${difficulty}&userId=${state.currentUser.id}`);
+    state.leaderboard = buildSharedLeaderboardRows(payload.rows);
     state.dbConnected = payload.db.connected;
   } catch {
     state.leaderboard = [];
@@ -714,9 +714,16 @@ function getChapterSolvedCount(chapter) {
   ), 0);
 }
 
-function getChapterVisibleBlankCount(chapter) {
+function getChapterVisibleBlankCount(chapter, language = state.currentLanguage, difficulty = getDifficulty()) {
   return chapter.verses.reduce((count, verse) => (
-    count + verse.tokens.filter((token, tokenIndex) => shouldHideToken(verse.tokens, tokenIndex, getDifficulty())).length
+    count + verse.tokens.filter((token, tokenIndex) => shouldHideToken(verse.tokens, tokenIndex, difficulty, language)).length
+  ), 0);
+}
+
+function getOverallVisibleBlankCount(language = state.currentLanguage, difficulty = getDifficulty()) {
+  const data = getData(language);
+  return data.chapters.reduce((count, chapter) => (
+    count + getChapterVisibleBlankCount(chapter, language, difficulty)
   ), 0);
 }
 
@@ -731,6 +738,49 @@ function getOverallDifficultyProgress() {
     ...totals,
     percent: totals.visible ? Math.round((totals.solved / totals.visible) * 100) : 100,
   };
+}
+
+function buildSharedLeaderboardRows(rows) {
+  const difficulty = getDifficulty();
+  return rows
+    .map((row) => {
+      const scores = Array.isArray(row.scores) && row.scores.length
+        ? row.scores
+        : [{ language: row.language || state.currentLanguage, solvedCount: row.solvedCount || 0 }];
+      const bestScore = scores
+        .map((score) => {
+          const language = score.language === "ko" ? "ko" : "en";
+          const visibleCount = getOverallVisibleBlankCount(language, difficulty);
+          const solvedCount = Number(score.solvedCount) || 0;
+          const ratio = visibleCount ? solvedCount / visibleCount : 0;
+          return {
+            language,
+            solvedCount,
+            visibleCount,
+            ratio,
+            percent: Math.round(ratio * 100),
+          };
+        })
+        .sort((left, right) => (
+          right.ratio - left.ratio
+          || right.solvedCount - left.solvedCount
+          || left.language.localeCompare(right.language)
+        ))[0];
+
+      return {
+        userId: Number(row.userId),
+        name: row.name,
+        ...bestScore,
+      };
+    })
+    .filter((row) => row.solvedCount > 0)
+    .sort((left, right) => (
+      right.ratio - left.ratio
+      || right.solvedCount - left.solvedCount
+      || left.name.localeCompare(right.name)
+    ))
+    .slice(0, 12)
+    .map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
 function renderOverallProgress() {
@@ -765,7 +815,7 @@ function renderStats() {
 
 function renderLeaderboard() {
   const copy = getCopy();
-  const difficultyKey = getDifficultyStorageKey();
+  const difficultyKey = `shared:${getDifficulty()}`;
   elements.leaderboardTitle.textContent = copy.leaderboardTitle(getDifficultyLabel(getDifficulty()));
 
   if (!state.leaderboard.length) {
@@ -773,7 +823,6 @@ function renderLeaderboard() {
     return;
   }
 
-  const totalVisible = getOverallDifficultyProgress().visible || 1;
   const previousRank = state.previousRanks[difficultyKey];
 
   elements.leaderboard.innerHTML = state.leaderboard.map((row) => {
@@ -795,14 +844,13 @@ function renderLeaderboard() {
       }
       state.previousRanks[difficultyKey] = row.rank;
     }
-    const percent = Math.round((row.solvedCount / totalVisible) * 100);
     return `
       <article class="leaderboard-row${row.userId === state.currentUser?.id ? " current-user" : ""}">
         <div>
           <div><strong>${row.name}</strong><span class="leaderboard-status">${medal}${status}</span></div>
           <div class="leaderboard-rank">${copy.rankLabel(row.rank)}</div>
         </div>
-        <div class="chapter-button-meta">${percent}%</div>
+        <div class="chapter-button-meta">${row.percent}%</div>
       </article>
     `;
   }).join("");

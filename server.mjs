@@ -389,6 +389,47 @@ function removeMemoryChapterProgress(userId, difficulty, language, chapterId) {
   }
 }
 
+function getMemoryLeaderboard(difficulty) {
+  const userScores = new Map();
+
+  for (const attempts of memoryAttempts.values()) {
+    attempts.forEach((attempt) => {
+      if (
+        !attempt.isCorrect
+        || attempt.difficulty !== difficulty
+        || !attempt.userId
+      ) {
+        return;
+      }
+
+      const user = [...memoryUsers.values()].find((item) => item.id === attempt.userId);
+      if (!user) {
+        return;
+      }
+
+      const userScore = userScores.get(attempt.userId) || {
+        userId: attempt.userId,
+        name: user.name,
+        languages: new Map(),
+      };
+      const language = attempt.language || "en";
+      const solved = userScore.languages.get(language) || new Set();
+      solved.add(getAttemptIdentity(attempt));
+      userScore.languages.set(language, solved);
+      userScores.set(attempt.userId, userScore);
+    });
+  }
+
+  return [...userScores.values()].map((row) => ({
+    userId: row.userId,
+    name: row.name,
+    scores: [...row.languages.entries()].map(([language, solved]) => ({
+      language,
+      solvedCount: solved.size,
+    })),
+  }));
+}
+
 async function handleLogin(request, response) {
   const body = await readJsonBody(request);
   const name = String(body.name || "").trim();
@@ -532,47 +573,61 @@ async function handleUserProgress(request, response, url) {
 
 async function handleLeaderboard(response, url) {
   const difficulty = String(url.searchParams.get("difficulty") || "");
-  const language = normalizeLanguage(url.searchParams.get("language"));
   if (!difficulty) {
     sendJson(response, 400, { error: "Missing difficulty." });
     return;
   }
 
+  if (!(pool && dbConnected)) {
+    sendJson(response, 200, {
+      db: {
+        configured: Boolean(process.env.DATABASE_URL),
+        connected: dbConnected,
+      },
+      rows: getMemoryLeaderboard(difficulty),
+    });
+    return;
+  }
+
   const result = await pool.query(
     `
-      with ranked as (
-        select
-          users.id as user_id,
-          users.name,
-          count(solved_words.id)::int as solved_count,
-          dense_rank() over (order by count(solved_words.id) desc, users.name asc) as rank
-        from users
-        left join solved_words
-          on solved_words.user_id = users.id
-         and solved_words.language = $1
-         and solved_words.difficulty = $2
-        group by users.id, users.name
-      )
-      select user_id, name, solved_count, rank
-      from ranked
-      where solved_count > 0
-      order by rank asc, name asc
-      limit 12;
+      select
+        users.id as user_id,
+        users.name,
+        solved_words.language,
+        count(solved_words.id)::int as solved_count
+      from users
+      join solved_words
+        on solved_words.user_id = users.id
+       and solved_words.difficulty = $1
+       and solved_words.language in ('en', 'ko')
+      group by users.id, users.name, solved_words.language
+      order by users.name asc, solved_words.language asc;
     `,
-    [language, difficulty]
+    [difficulty]
   );
+
+  const rowsByUser = new Map();
+  result.rows.forEach((row) => {
+    const userId = Number(row.user_id);
+    const userRow = rowsByUser.get(userId) || {
+      userId,
+      name: row.name,
+      scores: [],
+    };
+    userRow.scores.push({
+      language: normalizeLanguage(row.language),
+      solvedCount: Number(row.solved_count),
+    });
+    rowsByUser.set(userId, userRow);
+  });
 
   sendJson(response, 200, {
     db: {
       configured: Boolean(process.env.DATABASE_URL),
       connected: dbConnected,
     },
-    rows: result.rows.map((row) => ({
-      userId: Number(row.user_id),
-      name: row.name,
-      solvedCount: Number(row.solved_count),
-      rank: Number(row.rank),
-    })),
+    rows: [...rowsByUser.values()],
   });
 }
 
