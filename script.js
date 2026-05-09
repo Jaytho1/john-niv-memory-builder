@@ -315,6 +315,7 @@ const state = {
   currentUser: loadJson(sessionStorageKey),
   currentLanguage: loadLanguage(),
   pendingFocusKey: null,
+  pendingCelebrationKey: null,
 };
 
 if (state.currentUser?.preferredLanguage && datasets[state.currentUser.preferredLanguage]) {
@@ -1087,6 +1088,60 @@ function focusQuizInput(input) {
   input.focus();
 }
 
+function shouldCelebratePerfectAnswer(result) {
+  return Boolean(
+    result?.isCorrect
+    && Number(result.attemptCount) === 1
+    && Number(result.correctCount) === 1
+    && Number(result.correctPercentage) === 100
+  );
+}
+
+function launchSparkles(input) {
+  const wrapper = input.parentElement;
+  if (!(wrapper instanceof HTMLElement)) return;
+
+  wrapper.querySelectorAll(".sparkle-burst").forEach((node) => node.remove());
+
+  const burst = document.createElement("span");
+  burst.className = "sparkle-burst";
+  burst.setAttribute("aria-hidden", "true");
+
+  const wrapperRect = wrapper.getBoundingClientRect();
+  const inputRect = input.getBoundingClientRect();
+  const centerX = inputRect.left - wrapperRect.left + (inputRect.width / 2);
+  const centerY = inputRect.top - wrapperRect.top + (inputRect.height / 2);
+  burst.style.left = `${centerX}px`;
+  burst.style.top = `${centerY}px`;
+
+  const innerRadiusX = (input.offsetWidth / 2) + 8;
+  const innerRadiusY = (input.offsetHeight / 2) + 8;
+  const outerRadiusX = innerRadiusX + 22;
+  const outerRadiusY = innerRadiusY + 22;
+  const sparkleCount = 12;
+
+  Array.from({ length: sparkleCount }).forEach((_, index) => {
+    const angle = ((Math.PI * 2) / sparkleCount) * index - (Math.PI / 2);
+    const startX = Math.cos(angle) * innerRadiusX;
+    const startY = Math.sin(angle) * innerRadiusY;
+    const endX = Math.cos(angle) * outerRadiusX;
+    const endY = Math.sin(angle) * outerRadiusY;
+    const sparkle = document.createElement("span");
+    sparkle.className = "sparkle";
+    sparkle.style.setProperty("--sx", `${startX}px`);
+    sparkle.style.setProperty("--sy", `${startY}px`);
+    sparkle.style.setProperty("--dx", `${endX}px`);
+    sparkle.style.setProperty("--dy", `${endY}px`);
+    sparkle.style.setProperty("--delay", `${index * 32}ms`);
+    sparkle.style.setProperty("--rotation", `${(index * 27) - 18}deg`);
+    sparkle.style.setProperty("--scale", index % 4 === 0 ? "1.2" : "0.95");
+    burst.append(sparkle);
+  });
+
+  wrapper.append(burst);
+  window.setTimeout(() => burst.remove(), 1000);
+}
+
 function findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex) {
   const chapter = getChapter();
   const difficulty = getDifficulty();
@@ -1222,6 +1277,9 @@ async function submitAnswer(input) {
       setTokenProgress(chapterId, verseId, tokenIndex, progress);
       setTokenDraft(chapterId, verseId, tokenIndex, "");
       state.pendingFocusKey = findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex);
+      state.pendingCelebrationKey = shouldCelebratePerfectAnswer(result)
+        ? `${chapterId}:${verseId}:${tokenIndex}`
+        : null;
       applyProgressToInput(input, meta, progress, input.dataset.displayValue);
     } else {
       const progress = {
@@ -1233,6 +1291,7 @@ async function submitAnswer(input) {
       setTokenProgress(chapterId, verseId, tokenIndex, progress);
       setTokenDraft(chapterId, verseId, tokenIndex, "");
       state.pendingFocusKey = `${chapterId}:${verseId}:${tokenIndex}`;
+      state.pendingCelebrationKey = null;
       applyProgressToInput(input, meta, progress, input.dataset.displayValue);
       input.value = "";
       focusQuizInput(input);
@@ -1349,6 +1408,14 @@ function renderQuiz() {
       focusQuizInput(target);
     }
     state.pendingFocusKey = null;
+  }
+
+  if (state.pendingCelebrationKey) {
+    const target = document.querySelector(`[data-focus-key="${state.pendingCelebrationKey}"]`);
+    if (target instanceof HTMLInputElement) {
+      launchSparkles(target);
+    }
+    state.pendingCelebrationKey = null;
   }
 }
 
