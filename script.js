@@ -302,8 +302,6 @@ const koreanParticleSuffixes = [
   "로",
 ];
 
-const koreanWordBaseSetCache = new Map();
-
 const state = {
   selectedChapterId: 1,
   summary: null,
@@ -414,34 +412,12 @@ function isHangulWord(value) {
   return /^[가-힣]+$/u.test(value);
 }
 
-function getKoreanWordBaseSet() {
-  if (koreanWordBaseSetCache.has("ko")) {
-    return koreanWordBaseSetCache.get("ko");
-  }
-
-  const baseSet = new Set();
-  const koreanData = datasets.ko;
-  koreanData?.chapters?.forEach((chapter) => {
-    chapter.verses.forEach((verse) => {
-      verse.tokens.forEach((token) => {
-        if (token.type === "word" && typeof token.normalized === "string") {
-          baseSet.add(token.normalized);
-        }
-      });
-    });
-  });
-
-  koreanWordBaseSetCache.set("ko", baseSet);
-  return baseSet;
-}
-
-function getKoreanParticleSplit(tokenValue) {
+function getKoreanParticleCandidate(tokenValue) {
   if (!isHangulWord(tokenValue)) {
     return null;
   }
 
   const normalizedValue = tokenValue.toLowerCase();
-  const baseWords = getKoreanWordBaseSet();
 
   for (const suffix of koreanParticleSuffixes) {
     if (!normalizedValue.endsWith(suffix)) {
@@ -459,7 +435,7 @@ function getKoreanParticleSplit(tokenValue) {
     }
 
     const normalizedStem = normalizedValue.slice(0, stemLength);
-    if (!baseWords.has(normalizedStem)) {
+    if (isKoreanParticleSplitBlocked(normalizedValue, normalizedStem, suffix)) {
       continue;
     }
 
@@ -471,6 +447,33 @@ function getKoreanParticleSplit(tokenValue) {
   }
 
   return null;
+}
+
+function isKoreanParticleSplitBlocked(normalizedValue, normalizedStem, suffix) {
+  if (
+    normalizedValue === "함께"
+    || normalizedValue === "그대로"
+    || normalizedValue === "그러므로"
+    || normalizedValue === "참으로"
+    || normalizedValue === "진실로"
+    || normalizedValue === "실로"
+  ) {
+    return true;
+  }
+
+  if ((suffix === "로" || suffix === "으로") && normalizedValue.endsWith("므로")) {
+    return true;
+  }
+
+  if (suffix === "와" && (normalizedValue.endsWith("거니와") || normalizedValue.endsWith("려니와"))) {
+    return true;
+  }
+
+  return false;
+}
+
+function getKoreanParticleSplit(tokenValue) {
+  return getKoreanParticleCandidate(tokenValue);
 }
 
 function getBlankPromptForToken(token, language = state.currentLanguage) {
@@ -1088,6 +1091,15 @@ function focusQuizInput(input) {
   input.focus();
 }
 
+function renderPostAttemptPanels() {
+  if (!state.currentUser?.id) return;
+  renderChapterList();
+  renderLeaderboard();
+  renderRecommendations();
+  renderOverallProgress();
+  renderStats();
+}
+
 function shouldCelebratePerfectAnswer(result) {
   return Boolean(
     result?.isCorrect
@@ -1233,6 +1245,18 @@ function getAnswerMetaForInput(input) {
   return input.parentElement?.querySelector(".answer-meta") || null;
 }
 
+function refreshPostAttemptData() {
+  if (!state.currentUser?.id) return;
+
+  Promise.all([loadSummary(), loadLeaderboard()])
+    .then(() => {
+      renderPostAttemptPanels();
+    })
+    .catch(() => {
+      // Keep the quiz responsive even if analytics refresh fails.
+    });
+}
+
 async function submitAnswer(input) {
   if (input.disabled || !state.currentUser?.id || input.dataset.submitting === "true") return;
   const answer = getSubmittedAnswerForInput(input);
@@ -1280,7 +1304,6 @@ async function submitAnswer(input) {
       state.pendingCelebrationKey = shouldCelebratePerfectAnswer(result)
         ? `${chapterId}:${verseId}:${tokenIndex}`
         : null;
-      applyProgressToInput(input, meta, progress, input.dataset.displayValue);
     } else {
       const progress = {
         solved: false,
@@ -1292,13 +1315,10 @@ async function submitAnswer(input) {
       setTokenDraft(chapterId, verseId, tokenIndex, "");
       state.pendingFocusKey = `${chapterId}:${verseId}:${tokenIndex}`;
       state.pendingCelebrationKey = null;
-      applyProgressToInput(input, meta, progress, input.dataset.displayValue);
-      input.value = "";
-      focusQuizInput(input);
     }
 
-    await Promise.all([loadSummary(), loadLeaderboard()]);
     render();
+    refreshPostAttemptData();
   } catch (error) {
     setMetaContent(meta, {
       status: "incorrect",
@@ -1413,7 +1433,7 @@ function renderQuiz() {
   if (state.pendingCelebrationKey) {
     const target = document.querySelector(`[data-focus-key="${state.pendingCelebrationKey}"]`);
     if (target instanceof HTMLInputElement) {
-      launchSparkles(target);
+      window.requestAnimationFrame(() => launchSparkles(target));
     }
     state.pendingCelebrationKey = null;
   }
