@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createServer } from "node:http";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
+const maxJsonBodyBytes = 64 * 1024;
 
 const staticTypes = {
   ".html": "text/html; charset=utf-8",
@@ -27,14 +29,38 @@ const publicFiles = new Set([
   "/script.js",
   "/data/john-quiz-data.js",
   "/data/john-quiz-data-ko.js",
+  "/data/john-quiz-data.json",
+  "/data/john-quiz-data-ko.json",
 ]);
 
 const memoryAttempts = new Map();
+const memorySolvedWords = new Map();
+const memoryRewards = new Map();
+const memoryRewardAttemptCounts = new Map();
 const memoryUsers = new Map();
 let nextMemoryUserId = 1;
 
+const rewardTypes = [
+  { id: "fire", weight: 40 },
+  { id: "target", weight: 30 },
+  { id: "scythe", weight: 15 },
+  { id: "heart", weight: 10 },
+  { id: "golden_apple", weight: 4 },
+  { id: "wooden_cross", weight: 1 },
+];
+
+const rewardTypeIds = new Set(rewardTypes.map((reward) => reward.id));
+const emptyRewardCounts = Object.fromEntries(rewardTypes.map((reward) => [reward.id, 0]));
+
 let pool = null;
 let dbConnected = false;
+
+class RequestError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
 
 if (process.env.DATABASE_URL) {
   pool = new Pool({
@@ -61,6 +87,14 @@ async function initDb() {
   await pool.query(`
     alter table users
       add column if not exists preferred_language text not null default 'en';
+  `);
+  await pool.query(`
+    alter table users
+      add column if not exists session_token_hash text;
+  `);
+  await pool.query(`
+    alter table users
+      add column if not exists session_token_created_at timestamptz;
   `);
 
   await pool.query(`
@@ -110,6 +144,7 @@ async function initDb() {
       verse_id integer not null,
       token_index integer not null,
       expected_word text not null,
+      reward_type text,
       created_at timestamptz not null default now(),
       constraint solved_words_user_progress_unique
         unique (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word)
@@ -120,6 +155,39 @@ async function initDb() {
     alter table solved_words
       add column if not exists language text not null default 'en';
   `);
+  await pool.query(`
+    alter table solved_words
+      add column if not exists reward_type text;
+  `);
+
+  await pool.query(`
+    create table if not exists collected_rewards (
+      id bigserial primary key,
+      user_id bigint not null references users(id),
+      language text not null default 'en',
+      difficulty text not null,
+      chapter_id integer not null,
+      verse_id integer not null,
+      token_index integer not null,
+      expected_word text not null,
+      reward_type text not null,
+      created_at timestamptz not null default now(),
+      constraint collected_rewards_user_word_unique
+        unique (user_id, language, chapter_id, verse_id, token_index, expected_word)
+    );
+  `);
+  await pool.query(`
+    alter table collected_rewards
+      add column if not exists language text not null default 'en';
+  `);
+
+  await pool.query(`
+    update collected_rewards
+    set
+      language = split_part(difficulty, ':', 1),
+      difficulty = split_part(difficulty, ':', 2)
+    where difficulty like 'en:%' or difficulty like 'ko:%';
+  `);
 
   await pool.query(`
     update solved_words
@@ -127,6 +195,92 @@ async function initDb() {
       language = split_part(difficulty, ':', 1),
       difficulty = split_part(difficulty, ':', 2)
     where difficulty like 'en:%' or difficulty like 'ko:%';
+  `);
+
+  await pool.query(`
+    insert into collected_rewards (
+      user_id,
+      language,
+      difficulty,
+      chapter_id,
+      verse_id,
+      token_index,
+      expected_word,
+      reward_type,
+      created_at
+    )
+    select
+      user_id,
+      language,
+      difficulty,
+      chapter_id,
+      verse_id,
+      token_index,
+      expected_word,
+      reward_type,
+      created_at
+    from solved_words
+    where reward_type is not null
+    on conflict
+    do nothing;
+  `);
+
+  await pool.query(`
+    delete from collected_rewards duplicate_reward
+    using collected_rewards kept_reward
+    where duplicate_reward.id > kept_reward.id
+      and duplicate_reward.user_id = kept_reward.user_id
+      and duplicate_reward.language = kept_reward.language
+      and duplicate_reward.chapter_id = kept_reward.chapter_id
+      and duplicate_reward.verse_id = kept_reward.verse_id
+      and duplicate_reward.token_index = kept_reward.token_index
+      and duplicate_reward.expected_word = kept_reward.expected_word;
+  `);
+
+  await pool.query(`
+    do $$
+    declare
+      old_constraint text;
+      existing_constraint text;
+    begin
+      select tc.constraint_name
+      into old_constraint
+      from information_schema.table_constraints tc
+      join information_schema.key_column_usage kcu
+        on tc.constraint_name = kcu.constraint_name
+       and tc.table_schema = kcu.table_schema
+      where tc.table_schema = 'public'
+        and tc.table_name = 'collected_rewards'
+        and tc.constraint_type = 'UNIQUE'
+      group by tc.constraint_name
+      having array_agg(kcu.column_name::text order by kcu.ordinal_position)
+        = array['user_id', 'language', 'difficulty', 'chapter_id', 'verse_id', 'token_index', 'expected_word']
+      limit 1;
+
+      if old_constraint is not null then
+        execute format('alter table collected_rewards drop constraint %I', old_constraint);
+      end if;
+
+      select tc.constraint_name
+      into existing_constraint
+      from information_schema.table_constraints tc
+      join information_schema.key_column_usage kcu
+        on tc.constraint_name = kcu.constraint_name
+       and tc.table_schema = kcu.table_schema
+      where tc.table_schema = 'public'
+        and tc.table_name = 'collected_rewards'
+        and tc.constraint_type = 'UNIQUE'
+      group by tc.constraint_name
+      having array_agg(kcu.column_name::text order by kcu.ordinal_position)
+        = array['user_id', 'language', 'chapter_id', 'verse_id', 'token_index', 'expected_word']
+      limit 1;
+
+      if existing_constraint is null then
+        alter table collected_rewards
+          add constraint collected_rewards_user_word_unique
+          unique (user_id, language, chapter_id, verse_id, token_index, expected_word);
+      end if;
+    end $$;
   `);
 
   await pool.query(`
@@ -166,6 +320,21 @@ async function initDb() {
     end $$;
   `);
 
+  await pool.query(`
+    create index if not exists word_attempts_reward_lookup_idx
+      on word_attempts (user_id, language, chapter_id, verse_id, token_index, expected_word);
+  `);
+
+  await pool.query(`
+    create index if not exists solved_words_leaderboard_idx
+      on solved_words (difficulty, language, user_id);
+  `);
+
+  await pool.query(`
+    create index if not exists collected_rewards_leaderboard_idx
+      on collected_rewards (language, user_id, created_at desc);
+  `);
+
   dbConnected = true;
 }
 
@@ -181,14 +350,31 @@ function applySecurityHeaders(response) {
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  response.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+  );
 }
 
 async function readJsonBody(request) {
   let raw = "";
+  let byteLength = 0;
   for await (const chunk of request) {
+    byteLength += chunk.length;
+    if (byteLength > maxJsonBodyBytes) {
+      throw new RequestError(413, "Request body is too large.");
+    }
     raw += chunk;
   }
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new RequestError(400, "Invalid JSON body.");
+  }
 }
 
 function rememberAttempt(attempt) {
@@ -196,6 +382,40 @@ function rememberAttempt(attempt) {
   const current = memoryAttempts.get(key) || [];
   current.push(attempt);
   memoryAttempts.set(key, current);
+
+  const rewardKey = getRewardIdentity(attempt);
+  memoryRewardAttemptCounts.set(rewardKey, (memoryRewardAttemptCounts.get(rewardKey) || 0) + 1);
+}
+
+function rememberSolvedWord(attempt) {
+  memorySolvedWords.set(getAttemptIdentity(attempt), {
+    ...attempt,
+    rewardType: normalizeRewardType(attempt.rewardType),
+  });
+}
+
+function rememberReward(attempt) {
+  const key = getRewardIdentity(attempt);
+  const existingReward = memoryRewards.get(key);
+  if (existingReward) {
+    return existingReward;
+  }
+
+  if (!normalizeRewardType(attempt.rewardType)) {
+    return null;
+  }
+
+  const reward = {
+    ...attempt,
+    rewardType: normalizeRewardType(attempt.rewardType),
+    createdAt: attempt.createdAt,
+  };
+  memoryRewards.set(key, reward);
+  return reward;
+}
+
+function getMemoryAttemptCountForReward(attempt) {
+  return memoryRewardAttemptCounts.get(getRewardIdentity(attempt)) || 0;
 }
 
 function buildAttemptStats(correctCount, attemptCount) {
@@ -211,6 +431,98 @@ function buildAttemptStats(correctCount, attemptCount) {
   };
 }
 
+function createSessionToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+function hashSessionToken(token) {
+  return createHash("sha256").update(String(token || ""), "utf8").digest("hex");
+}
+
+function sessionTokenMatches(token, storedHash) {
+  if (!token || !storedHash) {
+    return false;
+  }
+
+  const candidate = Buffer.from(hashSessionToken(token), "hex");
+  const stored = Buffer.from(storedHash, "hex");
+  return candidate.length === stored.length && timingSafeEqual(candidate, stored);
+}
+
+function getBearerToken(request) {
+  const header = request.headers.authorization || "";
+  if (!header.startsWith("Bearer ")) {
+    return "";
+  }
+  return header.slice("Bearer ".length).trim();
+}
+
+function publicUser(user, sessionToken) {
+  return {
+    id: Number(user.id),
+    name: user.name,
+    email: user.email,
+    preferredLanguage: normalizeLanguage(user.preferredLanguage ?? user.preferred_language),
+    sessionToken,
+  };
+}
+
+async function requireUserSession(request, response, userId) {
+  const token = getBearerToken(request);
+  if (!userId || !token) {
+    sendJson(response, 401, { error: "Please sign in again." });
+    return false;
+  }
+
+  if (!(pool && dbConnected)) {
+    const user = [...memoryUsers.values()].find((item) => item.id === userId);
+    if (user && sessionTokenMatches(token, user.sessionTokenHash)) {
+      return true;
+    }
+    sendJson(response, 401, { error: "Please sign in again." });
+    return false;
+  }
+
+  const result = await pool.query(
+    `select session_token_hash from users where id = $1 limit 1;`,
+    [userId]
+  );
+
+  if (sessionTokenMatches(token, result.rows[0]?.session_token_hash)) {
+    return true;
+  }
+
+  sendJson(response, 401, { error: "Please sign in again." });
+  return false;
+}
+
+function normalizeRewardType(value) {
+  const rewardType = String(value || "");
+  return rewardTypeIds.has(rewardType) ? rewardType : null;
+}
+
+function createRewardCounts() {
+  return { ...emptyRewardCounts };
+}
+
+function pickRewardType() {
+  const totalWeight = rewardTypes.reduce((total, reward) => total + reward.weight, 0);
+  let roll = Math.random() * totalWeight;
+
+  for (const reward of rewardTypes) {
+    roll -= reward.weight;
+    if (roll < 0) {
+      return reward.id;
+    }
+  }
+
+  return rewardTypes[0].id;
+}
+
+function shouldAwardReward(correctCount, attemptCount, isCorrect) {
+  return Boolean(isCorrect && attemptCount === 1 && correctCount === 1);
+}
+
 function normalizeLanguage(value) {
   return value === "ko" ? "ko" : "en";
 }
@@ -220,6 +532,17 @@ function getAttemptIdentity(attempt) {
     attempt.userId ?? "guest",
     attempt.language ?? "en",
     attempt.difficulty ?? "",
+    attempt.chapterId,
+    attempt.verseId,
+    attempt.tokenIndex,
+    attempt.expectedWord,
+  ].join(":");
+}
+
+function getRewardIdentity(attempt) {
+  return [
+    attempt.userId ?? "guest",
+    attempt.language ?? "en",
     attempt.chapterId,
     attempt.verseId,
     attempt.tokenIndex,
@@ -373,59 +696,132 @@ async function getDbSummary(userId, difficulty = "", language = "en") {
 }
 
 function removeMemoryChapterProgress(userId, difficulty, language, chapterId) {
-  for (const [key, attempts] of memoryAttempts.entries()) {
-    const remaining = attempts.filter((attempt) => !(
-      attempt.userId === userId
-      && attempt.difficulty === difficulty
-      && (attempt.language || "en") === language
-      && attempt.chapterId === chapterId
-    ));
-
-    if (remaining.length) {
-      memoryAttempts.set(key, remaining);
-    } else {
-      memoryAttempts.delete(key);
+  for (const [key, solvedWord] of memorySolvedWords.entries()) {
+    if (
+      solvedWord.userId === userId
+      && solvedWord.difficulty === difficulty
+      && (solvedWord.language || "en") === language
+      && solvedWord.chapterId === chapterId
+    ) {
+      memorySolvedWords.delete(key);
     }
   }
+}
+
+function getMemorySolvedProgress(userId, difficulty, language) {
+  const rows = [];
+
+  for (const solvedWord of memorySolvedWords.values()) {
+    if (
+      solvedWord.userId !== userId
+      || solvedWord.difficulty !== difficulty
+      || (solvedWord.language || "en") !== language
+    ) {
+      continue;
+    }
+
+    const reward = memoryRewards.get(getRewardIdentity(solvedWord));
+    rows.push({
+      chapterId: solvedWord.chapterId,
+      verseId: solvedWord.verseId,
+      tokenIndex: solvedWord.tokenIndex,
+      expectedWord: solvedWord.expectedWord,
+      rewardType: normalizeRewardType(reward?.rewardType),
+      collectedAt: reward?.createdAt || null,
+    });
+  }
+
+  return rows.sort((left, right) => (
+    left.chapterId - right.chapterId
+    || left.verseId - right.verseId
+    || left.tokenIndex - right.tokenIndex
+  ));
 }
 
 function getMemoryLeaderboard(difficulty) {
   const userScores = new Map();
 
-  for (const attempts of memoryAttempts.values()) {
-    attempts.forEach((attempt) => {
-      if (
-        !attempt.isCorrect
-        || attempt.difficulty !== difficulty
-        || !attempt.userId
-      ) {
-        return;
-      }
+  const getUserScore = (userId) => {
+    const user = [...memoryUsers.values()].find((item) => item.id === userId);
+    if (!user) {
+      return null;
+    }
 
-      const user = [...memoryUsers.values()].find((item) => item.id === attempt.userId);
-      if (!user) {
-        return;
-      }
+    const userScore = userScores.get(userId) || {
+      userId,
+      name: user.name,
+      languages: new Map(),
+    };
+    userScores.set(userId, userScore);
+    return userScore;
+  };
 
-      const userScore = userScores.get(attempt.userId) || {
-        userId: attempt.userId,
-        name: user.name,
-        languages: new Map(),
-      };
-      const language = attempt.language || "en";
-      const solved = userScore.languages.get(language) || new Set();
-      solved.add(getAttemptIdentity(attempt));
-      userScore.languages.set(language, solved);
-      userScores.set(attempt.userId, userScore);
-    });
+  const getLanguageScore = (userScore, language) => {
+    const normalizedLanguage = normalizeLanguage(language);
+    const languageScore = userScore.languages.get(normalizedLanguage) || {
+      solved: new Set(),
+      rewardKeys: new Set(),
+      rewardCounts: createRewardCounts(),
+      latestRewardType: null,
+      latestCollectedAt: null,
+    };
+    userScore.languages.set(normalizedLanguage, languageScore);
+    return languageScore;
+  };
+
+  for (const solvedWord of memorySolvedWords.values()) {
+    if (
+      solvedWord.difficulty !== difficulty
+      || !solvedWord.userId
+    ) {
+      continue;
+    }
+
+    const userScore = getUserScore(solvedWord.userId);
+    if (!userScore) {
+      continue;
+    }
+
+    const languageScore = getLanguageScore(userScore, solvedWord.language || "en");
+    languageScore.solved.add(getAttemptIdentity(solvedWord));
+  }
+
+  for (const reward of memoryRewards.values()) {
+    if (!reward.userId) {
+      continue;
+    }
+
+    const userScore = getUserScore(reward.userId);
+    if (!userScore) {
+      continue;
+    }
+
+    const languageScore = getLanguageScore(userScore, reward.language || "en");
+    const rewardKey = getRewardIdentity(reward);
+    if (!languageScore.rewardKeys.has(rewardKey)) {
+      languageScore.rewardKeys.add(rewardKey);
+      const rewardType = normalizeRewardType(reward.rewardType);
+      if (rewardType) {
+        languageScore.rewardCounts[rewardType] += 1;
+      }
+    }
+    const rewardTimestamp = Date.parse(reward.createdAt || "") || 0;
+    const latestTimestamp = Date.parse(languageScore.latestCollectedAt || "") || 0;
+    if (rewardTimestamp >= latestTimestamp) {
+      languageScore.latestRewardType = normalizeRewardType(reward.rewardType);
+      languageScore.latestCollectedAt = reward.createdAt || null;
+    }
   }
 
   return [...userScores.values()].map((row) => ({
     userId: row.userId,
     name: row.name,
-    scores: [...row.languages.entries()].map(([language, solved]) => ({
+    scores: [...row.languages.entries()].map(([language, score]) => ({
       language,
-      solvedCount: solved.size,
+      solvedCount: score.solved.size,
+      rewardCounts: score.rewardCounts,
+      latestRewardType: score.latestRewardType,
+      latestCollectedAt: score.latestCollectedAt,
     })),
   }));
 }
@@ -435,6 +831,8 @@ async function handleLogin(request, response) {
   const name = String(body.name || "").trim();
   const email = String(body.email || "").trim().toLowerCase();
   const preferredLanguage = normalizeLanguage(body.preferredLanguage);
+  const sessionToken = createSessionToken();
+  const sessionTokenHash = hashSessionToken(sessionToken);
 
   if (!name || !email) {
     sendJson(response, 400, { error: "Name and email are required." });
@@ -443,7 +841,8 @@ async function handleLogin(request, response) {
 
   if (!(pool && dbConnected)) {
     const user = getOrCreateMemoryUser(name, email, preferredLanguage);
-    sendJson(response, 200, { user });
+    user.sessionTokenHash = sessionTokenHash;
+    sendJson(response, 200, { user: publicUser(user, sessionToken) });
     return;
   }
 
@@ -458,37 +857,51 @@ async function handleLogin(request, response) {
       await pool.query(
         `
           update users
-          set name = $1, preferred_language = $2
-          where email = $3;
+          set
+            name = $1,
+            preferred_language = $2,
+            session_token_hash = $3,
+            session_token_created_at = now()
+          where email = $4;
         `,
-        [name, preferredLanguage, email]
+        [name, preferredLanguage, sessionTokenHash, email]
+      );
+    } else {
+      await pool.query(
+        `
+          update users
+          set
+            session_token_hash = $1,
+            session_token_created_at = now()
+          where email = $2;
+        `,
+        [sessionTokenHash, email]
       );
     }
 
-    sendJson(response, 200, { user: {
-      id: Number(existingUser.id),
-      name,
-      email: existingUser.email,
-      preferredLanguage,
-    } });
+    sendJson(response, 200, {
+      user: publicUser({
+        id: existingUser.id,
+        name,
+        email: existingUser.email,
+        preferred_language: preferredLanguage,
+      }, sessionToken),
+    });
     return;
   }
 
   const inserted = await pool.query(
     `
-      insert into users (name, email, preferred_language)
-      values ($1, $2, $3)
+      insert into users (name, email, preferred_language, session_token_hash, session_token_created_at)
+      values ($1, $2, $3, $4, now())
       returning id, name, email, preferred_language;
     `,
-    [name, email, preferredLanguage]
+    [name, email, preferredLanguage, sessionTokenHash]
   );
 
-  sendJson(response, 200, { user: {
-    id: Number(inserted.rows[0].id),
-    name: inserted.rows[0].name,
-    email: inserted.rows[0].email,
-    preferredLanguage: inserted.rows[0].preferred_language,
-  } });
+  sendJson(response, 200, {
+    user: publicUser(inserted.rows[0], sessionToken),
+  });
 }
 
 async function handleUserPreferences(request, response) {
@@ -502,6 +915,10 @@ async function handleUserPreferences(request, response) {
     return;
   }
 
+  if (!(await requireUserSession(request, response, userId))) {
+    return;
+  }
+
   if (!(pool && dbConnected)) {
     const user = [...memoryUsers.values()].find((item) => item.id === userId);
     if (!user) {
@@ -512,7 +929,7 @@ async function handleUserPreferences(request, response) {
       user.name = name;
     }
     user.preferredLanguage = preferredLanguage;
-    sendJson(response, 200, { user });
+    sendJson(response, 200, { user: publicUser(user, getBearerToken(request)) });
     return;
   }
 
@@ -551,12 +968,38 @@ async function handleUserProgress(request, response, url) {
     return;
   }
 
+  if (!(await requireUserSession(request, response, userId))) {
+    return;
+  }
+
+  if (!(pool && dbConnected)) {
+    sendJson(response, 200, {
+      rows: getMemorySolvedProgress(userId, difficulty, language),
+    });
+    return;
+  }
+
   const result = await pool.query(
     `
-      select chapter_id, verse_id, token_index, expected_word
+      select
+        solved_words.chapter_id,
+        solved_words.verse_id,
+        solved_words.token_index,
+        solved_words.expected_word,
+        collected_rewards.reward_type,
+        collected_rewards.created_at as collected_at
       from solved_words
-      where user_id = $1 and language = $2 and difficulty = $3
-      order by chapter_id, verse_id, token_index;
+      left join collected_rewards
+        on collected_rewards.user_id = solved_words.user_id
+       and collected_rewards.language = solved_words.language
+       and collected_rewards.chapter_id = solved_words.chapter_id
+       and collected_rewards.verse_id = solved_words.verse_id
+       and collected_rewards.token_index = solved_words.token_index
+       and collected_rewards.expected_word = solved_words.expected_word
+      where solved_words.user_id = $1
+        and solved_words.language = $2
+        and solved_words.difficulty = $3
+      order by solved_words.chapter_id, solved_words.verse_id, solved_words.token_index;
     `,
     [userId, language, difficulty]
   );
@@ -567,12 +1010,15 @@ async function handleUserProgress(request, response, url) {
       verseId: Number(row.verse_id),
       tokenIndex: Number(row.token_index),
       expectedWord: row.expected_word,
+      rewardType: normalizeRewardType(row.reward_type),
+      collectedAt: row.collected_at?.toISOString?.() || row.collected_at,
     })),
   });
 }
 
 async function handleLeaderboard(response, url) {
   const difficulty = String(url.searchParams.get("difficulty") || "");
+  const currentUserId = Number(url.searchParams.get("userId")) || 0;
   if (!difficulty) {
     sendJson(response, 400, { error: "Missing difficulty." });
     return;
@@ -591,20 +1037,74 @@ async function handleLeaderboard(response, url) {
 
   const result = await pool.query(
     `
+      with solved_stats as (
+        select
+          user_id,
+          language,
+          count(id)::int as solved_count
+        from solved_words
+        where difficulty = $1
+          and language in ('en', 'ko')
+        group by user_id, language
+      ),
+      reward_stats as (
+        select
+          user_id,
+          language,
+          count(id)::int as reward_total,
+          count(id) filter (where reward_type = 'fire')::int as fire_count,
+          count(id) filter (where reward_type = 'target')::int as target_count,
+          count(id) filter (where reward_type = 'scythe')::int as scythe_count,
+          count(id) filter (where reward_type = 'heart')::int as heart_count,
+          count(id) filter (where reward_type = 'golden_apple')::int as golden_apple_count,
+          count(id) filter (where reward_type = 'wooden_cross')::int as wooden_cross_count,
+          (array_agg(reward_type order by created_at desc, id desc))[1] as latest_reward_type,
+          max(created_at) as latest_collected_at
+        from collected_rewards
+        where language in ('en', 'ko')
+        group by user_id, language
+      ),
+      combined_stats as (
+        select
+          coalesce(solved_stats.user_id, reward_stats.user_id) as user_id,
+          coalesce(solved_stats.language, reward_stats.language) as language,
+          coalesce(solved_stats.solved_count, 0)::int as solved_count,
+          coalesce(reward_stats.reward_total, 0)::int as reward_total,
+          coalesce(reward_stats.fire_count, 0)::int as fire_count,
+          coalesce(reward_stats.target_count, 0)::int as target_count,
+          coalesce(reward_stats.scythe_count, 0)::int as scythe_count,
+          coalesce(reward_stats.heart_count, 0)::int as heart_count,
+          coalesce(reward_stats.golden_apple_count, 0)::int as golden_apple_count,
+          coalesce(reward_stats.wooden_cross_count, 0)::int as wooden_cross_count,
+          reward_stats.latest_reward_type,
+          reward_stats.latest_collected_at
+        from solved_stats
+        full join reward_stats
+          on reward_stats.user_id = solved_stats.user_id
+         and reward_stats.language = solved_stats.language
+      )
       select
         users.id as user_id,
         users.name,
-        solved_words.language,
-        count(solved_words.id)::int as solved_count
+        combined_stats.language,
+        combined_stats.solved_count,
+        combined_stats.fire_count,
+        combined_stats.target_count,
+        combined_stats.scythe_count,
+        combined_stats.heart_count,
+        combined_stats.golden_apple_count,
+        combined_stats.wooden_cross_count,
+        combined_stats.latest_reward_type,
+        combined_stats.latest_collected_at
       from users
-      join solved_words
-        on solved_words.user_id = users.id
-       and solved_words.difficulty = $1
-       and solved_words.language in ('en', 'ko')
-      group by users.id, users.name, solved_words.language
-      order by users.name asc, solved_words.language asc;
+      join combined_stats
+        on combined_stats.user_id = users.id
+      where combined_stats.solved_count > 0
+         or combined_stats.reward_total > 0
+         or users.id = $2
+      order by users.name asc, combined_stats.language asc;
     `,
-    [difficulty]
+    [difficulty, currentUserId]
   );
 
   const rowsByUser = new Map();
@@ -618,6 +1118,16 @@ async function handleLeaderboard(response, url) {
     userRow.scores.push({
       language: normalizeLanguage(row.language),
       solvedCount: Number(row.solved_count),
+      rewardCounts: {
+        fire: Number(row.fire_count),
+        target: Number(row.target_count),
+        scythe: Number(row.scythe_count),
+        heart: Number(row.heart_count),
+        golden_apple: Number(row.golden_apple_count),
+        wooden_cross: Number(row.wooden_cross_count),
+      },
+      latestRewardType: normalizeRewardType(row.latest_reward_type),
+      latestCollectedAt: row.latest_collected_at?.toISOString?.() || row.latest_collected_at,
     });
     rowsByUser.set(userId, userRow);
   });
@@ -644,6 +1154,10 @@ async function handleAttempt(request, response) {
     return;
   }
 
+  if (!(await requireUserSession(request, response, userId))) {
+    return;
+  }
+
   const attempt = {
     userId,
     language,
@@ -654,6 +1168,7 @@ async function handleAttempt(request, response) {
     expectedWord,
     answer,
     isCorrect: answer === expectedWord,
+    createdAt: new Date().toISOString(),
   };
 
   if (pool && dbConnected) {
@@ -668,6 +1183,28 @@ async function handleAttempt(request, response) {
       });
       return;
     }
+
+    const priorCountResult = await pool.query(
+      `
+        select count(*)::int as prior_attempt_count
+        from word_attempts
+        where user_id = $1
+          and language = $2
+          and chapter_id = $3
+          and verse_id = $4
+          and token_index = $5
+          and expected_word = $6;
+      `,
+      [
+        attempt.userId,
+        attempt.language,
+        attempt.chapterId,
+        attempt.verseId,
+        attempt.tokenIndex,
+        attempt.expectedWord,
+      ]
+    );
+    const priorAttemptCount = Number(priorCountResult.rows[0].prior_attempt_count);
 
     await pool.query(
       `
@@ -686,25 +1223,6 @@ async function handleAttempt(request, response) {
         attempt.isCorrect,
       ]
     );
-
-    if (attempt.isCorrect) {
-      await pool.query(
-        `
-          insert into solved_words (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word)
-          values ($1, $2, $3, $4, $5, $6, $7)
-          on conflict (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word) do nothing;
-        `,
-        [
-          attempt.userId,
-          attempt.language,
-          attempt.difficulty,
-          attempt.chapterId,
-          attempt.verseId,
-          attempt.tokenIndex,
-          attempt.expectedWord,
-        ]
-      );
-    }
 
     const countResult = await pool.query(
       `
@@ -732,25 +1250,118 @@ async function handleAttempt(request, response) {
       ]
     );
 
+    const attemptCount = Number(countResult.rows[0].attempt_count);
+    const correctCount = Number(countResult.rows[0].correct_count);
+    let rewardType = null;
+    let rewardAwarded = false;
+
+    if (attempt.isCorrect) {
+      const candidateRewardType = priorAttemptCount === 0
+        ? pickRewardType()
+        : null;
+      if (candidateRewardType) {
+        const insertRewardResult = await pool.query(
+          `
+            insert into collected_rewards (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word, reward_type)
+            values ($1, $2, $3, $4, $5, $6, $7, $8)
+            on conflict (user_id, language, chapter_id, verse_id, token_index, expected_word)
+            do nothing
+            returning id;
+          `,
+          [
+            attempt.userId,
+            attempt.language,
+            attempt.difficulty,
+            attempt.chapterId,
+            attempt.verseId,
+            attempt.tokenIndex,
+            attempt.expectedWord,
+            candidateRewardType,
+          ]
+        );
+        rewardAwarded = insertRewardResult.rows.length > 0;
+      }
+
+      const rewardResult = await pool.query(
+        `
+          select reward_type, created_at
+          from collected_rewards
+          where user_id = $1
+            and language = $2
+            and chapter_id = $3
+            and verse_id = $4
+            and token_index = $5
+            and expected_word = $6
+          limit 1;
+        `,
+        [
+          attempt.userId,
+          attempt.language,
+          attempt.chapterId,
+          attempt.verseId,
+          attempt.tokenIndex,
+          attempt.expectedWord,
+        ]
+      );
+      rewardType = normalizeRewardType(rewardResult.rows[0]?.reward_type);
+      attempt.createdAt = rewardResult.rows[0]?.created_at?.toISOString?.() || attempt.createdAt;
+
+      await pool.query(
+        `
+          insert into solved_words (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word, reward_type)
+          values ($1, $2, $3, $4, $5, $6, $7, $8)
+          on conflict (user_id, language, difficulty, chapter_id, verse_id, token_index, expected_word)
+          do update set reward_type = coalesce(solved_words.reward_type, excluded.reward_type)
+        `,
+        [
+          attempt.userId,
+          attempt.language,
+          attempt.difficulty,
+          attempt.chapterId,
+          attempt.verseId,
+          attempt.tokenIndex,
+          attempt.expectedWord,
+          rewardType,
+        ]
+      );
+    }
+
     sendJson(response, 200, {
       ...attempt,
-      ...buildAttemptStats(
-        Number(countResult.rows[0].correct_count),
-        Number(countResult.rows[0].attempt_count)
-      ),
+      ...buildAttemptStats(correctCount, attemptCount),
+      rewardType,
+      rewardAwarded,
+      collectedAt: attempt.isCorrect ? attempt.createdAt : null,
       dbConnected: true,
     });
     return;
   }
 
-  rememberAttempt(attempt);
   const key = getAttemptIdentity(attempt);
+  const attemptsBeforeCount = getMemoryAttemptCountForReward(attempt);
+  const existingReward = memoryRewards.get(getRewardIdentity(attempt));
+  let rewardAwarded = false;
+  attempt.rewardType = existingReward?.rewardType || (shouldAwardReward(attempt.isCorrect ? 1 : 0, attemptsBeforeCount + 1, attempt.isCorrect)
+    ? pickRewardType()
+    : null);
+  rememberAttempt(attempt);
+  let reward = existingReward || null;
+  if (attempt.isCorrect) {
+    reward = rememberReward(attempt) || existingReward;
+    rewardAwarded = Boolean(reward && !existingReward && attemptsBeforeCount === 0);
+    attempt.rewardType = normalizeRewardType(reward?.rewardType);
+    attempt.createdAt = reward?.createdAt || attempt.createdAt;
+    rememberSolvedWord(attempt);
+  }
   const attempts = memoryAttempts.get(key) || [];
   const correctCount = attempts.filter((item) => item.isCorrect).length;
 
   sendJson(response, 200, {
     ...attempt,
     ...buildAttemptStats(correctCount, attempts.length),
+    rewardType: normalizeRewardType(attempt.rewardType),
+    rewardAwarded,
+    collectedAt: attempt.isCorrect ? reward?.createdAt || null : null,
     dbConnected: false,
   });
 }
@@ -767,21 +1378,14 @@ async function handleChapterReset(request, response) {
     return;
   }
 
+  if (!(await requireUserSession(request, response, userId))) {
+    return;
+  }
+
   if (pool && dbConnected) {
     await pool.query(
       `
         delete from solved_words
-        where user_id = $1
-          and language = $2
-          and difficulty = $3
-          and chapter_id = $4;
-      `,
-      [userId, language, difficulty, chapterId]
-    );
-
-    await pool.query(
-      `
-        delete from word_attempts
         where user_id = $1
           and language = $2
           and difficulty = $3
@@ -798,10 +1402,13 @@ async function handleChapterReset(request, response) {
   sendJson(response, 200, { ok: true, dbConnected: false });
 }
 
-async function handleSummary(response, url) {
+async function handleSummary(request, response, url) {
   const userId = Number(url.searchParams.get("userId"));
   const difficulty = String(url.searchParams.get("difficulty") || "");
   const language = normalizeLanguage(url.searchParams.get("language"));
+  if (userId && !(await requireUserSession(request, response, userId))) {
+    return;
+  }
   const chapters = pool && dbConnected && userId
     ? await getDbSummary(userId, difficulty, language)
     : getMemorySummary(userId, difficulty, language);
@@ -873,7 +1480,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/api/progress/summary") {
-      await handleSummary(response, url);
+      await handleSummary(request, response, url);
       return;
     }
 
@@ -900,9 +1507,10 @@ const server = createServer(async (request, response) => {
 
     serveStatic(request, response);
   } catch (error) {
-    sendJson(response, 500, {
-      error: "Server error",
-      detail: error instanceof Error ? error.message : String(error),
+    const statusCode = error instanceof RequestError ? error.statusCode : 500;
+    sendJson(response, statusCode, {
+      error: error instanceof RequestError ? error.message : "Server error",
+      detail: error instanceof RequestError ? undefined : error instanceof Error ? error.message : String(error),
     });
   }
 });

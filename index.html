@@ -104,15 +104,21 @@
         </section>
 
         <section class="grid">
-          <article class="card insights-card">
-            <div class="section-heading">
-              <div>
-                <p id="leaderboard-label" class="section-label">Leaderboard</p>
-                <h2 id="leaderboard-title">Extreme Leaderboard</h2>
+          <div class="insights-stack">
+            <article class="card insights-card">
+              <div class="section-heading">
+                <div>
+                  <p id="leaderboard-label" class="section-label">Leaderboard</p>
+                  <h2 id="leaderboard-title">Extreme Leaderboard</h2>
+                </div>
               </div>
-            </div>
-            <div id="leaderboard" class="recommendations"></div>
-          </article>
+              <div id="leaderboard" class="recommendations"></div>
+            </article>
+
+            <article class="card levels-card">
+              <div id="levels-section" class="levels-section"></div>
+            </article>
+          </div>
 
           <article class="card controls-card">
             <div class="section-heading">
@@ -162,8 +168,6 @@
       </section>
     </main>
 
-    <script src="./data/john-quiz-data.js"></script>
-    <script src="./data/john-quiz-data-ko.js"></script>
     <script src="./script.js"></script>
   </body>
 </html>

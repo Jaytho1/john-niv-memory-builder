@@ -1,7 +1,17 @@
-const datasets = {
-  en: window.JOHN_QUIZ_DATA,
-  ko: window.JOHN_QUIZ_DATA_KO,
+const datasetSources = {
+  en: "./data/john-quiz-data.json",
+  ko: "./data/john-quiz-data-ko.json",
 };
+
+const datasets = {
+  en: window.JOHN_QUIZ_DATA || null,
+  ko: window.JOHN_QUIZ_DATA_KO || null,
+};
+
+const datasetLoadPromises = {};
+const hiddenTokenIndexCache = new WeakMap();
+const chapterVisibleBlankCountCache = new Map();
+const overallVisibleBlankCountCache = new Map();
 
 const progressStorageKey = "john-quiz-progress-v2";
 const draftStorageKey = "john-quiz-drafts-v1";
@@ -10,6 +20,7 @@ const sessionStorageKey = "john-quiz-session-v1";
 const leaderboardRankStorageKey = "john-quiz-ranks-v1";
 const languageStorageKey = "john-quiz-language-v1";
 const autosaveIntervalMs = 2 * 60 * 1000;
+const storageSaveDelayMs = 250;
 
 const elements = {
   authOverlay: document.querySelector("#auth-overlay"),
@@ -44,6 +55,7 @@ const elements = {
   leaderboardLabel: document.querySelector("#leaderboard-label"),
   leaderboardTitle: document.querySelector("#leaderboard-title"),
   leaderboard: document.querySelector("#leaderboard"),
+  levelsSection: document.querySelector("#levels-section"),
   recommendationsLabel: document.querySelector("#recommendations-label"),
   recommendationsTitle: document.querySelector("#recommendations-title"),
   recommendations: document.querySelector("#recommendations"),
@@ -110,6 +122,38 @@ const uiCopy = {
     chapterSummary: (description, verseCount) => `${description} ${verseCount} verses in this chapter.`,
     leaderboardTitle: (difficultyLabel) => `${difficultyLabel} Leaderboard`,
     noScores: () => "No scores yet for this difficulty.",
+    levelsLabel: "Levels",
+    levelsTitle: "Collection Level",
+    currentLevel: (level) => `Level ${level}`,
+    maxLevel: "Max level",
+    levelProgress: (current, required) => `${current} / ${required}`,
+    rewardFound: (label) => `Collect ${label}`,
+    demoLabel: "Reward demo",
+    collectiblesLabel: "Collectibles",
+    solvedRewardLabel: "Solved",
+    tapToClaim: "Tap to claim",
+    tapToOpen: "Tap to open",
+    tapToOpenTreasureChest: "Tap to open treasure chest",
+    collectibleLabels: {
+      fire: "Fire",
+      target: "Heart",
+      scythe: "Dove",
+      heart: "Crown",
+      golden_apple: "Golden Apple",
+      wooden_cross: "Cross",
+    },
+    rarityLabels: {
+      common: "Common",
+      uncommon: "Uncommon",
+      rare: "Rare",
+      epic: "Epic",
+      legendary: "Legendary",
+      mythical: "Mythical",
+    },
+    achievementLabels: {
+      golden_apple: "Golden Apple",
+      wooden_cross: "Cross",
+    },
     statLabels: {
       difficulty: "Difficulty",
       visibleBlanks: "Visible blanks",
@@ -182,6 +226,38 @@ const uiCopy = {
     chapterSummary: (description, verseCount) => `${description} 이 장에는 ${verseCount}개의 절이 있습니다.`,
     leaderboardTitle: (difficultyLabel) => `${difficultyLabel} 리더보드`,
     noScores: () => "이 난이도에는 아직 기록이 없습니다.",
+    levelsLabel: "레벨",
+    levelsTitle: "수집 레벨",
+    currentLevel: (level) => `${level}레벨`,
+    maxLevel: "최대 레벨",
+    levelProgress: (current, required) => `${current} / ${required}`,
+    rewardFound: (label) => `${label} 수집`,
+    demoLabel: "보상 데모",
+    collectiblesLabel: "수집품",
+    solvedRewardLabel: "완료",
+    tapToClaim: "탭하여 받기",
+    tapToOpen: "탭하여 열기",
+    tapToOpenTreasureChest: "탭하여 보물 상자 열기",
+    collectibleLabels: {
+      fire: "불꽃",
+      target: "하트",
+      scythe: "비둘기",
+      heart: "왕관",
+      golden_apple: "황금 사과",
+      wooden_cross: "십자가",
+    },
+    rarityLabels: {
+      common: "일반",
+      uncommon: "고급",
+      rare: "희귀",
+      epic: "영웅",
+      legendary: "전설",
+      mythical: "신화",
+    },
+    achievementLabels: {
+      golden_apple: "황금 사과",
+      wooden_cross: "십자가",
+    },
     statLabels: {
       difficulty: "난이도",
       visibleBlanks: "보이는 빈칸",
@@ -302,6 +378,76 @@ const koreanParticleSuffixes = [
   "로",
 ];
 
+const collectibleTypes = [
+  {
+    id: "fire",
+    label: "Fire",
+    rarity: "Common",
+    chance: 40,
+    icon: "🔥",
+    levelUnits: 1,
+    levelColor: "#f97316",
+  },
+  {
+    id: "target",
+    label: "Heart",
+    rarity: "Uncommon",
+    chance: 30,
+    icon: "💜",
+    levelUnits: 1.1,
+    levelColor: "#a855f7",
+  },
+  {
+    id: "scythe",
+    label: "Dove",
+    rarity: "Rare",
+    chance: 15,
+    icon: "🕊",
+    levelUnits: 2,
+    levelColor: "#cbd5e1",
+  },
+  {
+    id: "heart",
+    label: "Crown",
+    rarity: "Epic",
+    chance: 10,
+    icon: "👑",
+    levelUnits: 3,
+    levelColor: "#8b5cf6",
+  },
+  {
+    id: "golden_apple",
+    label: "Apple",
+    rarity: "Legendary",
+    chance: 4,
+    icon: "🍏",
+    levelUnits: 8,
+    levelColor: "#f5b82e",
+    shiny: true,
+    achievement: true,
+  },
+  {
+    id: "wooden_cross",
+    label: "Cross",
+    rarity: "Mythical",
+    chance: 1,
+    icon: "✝",
+    levelUnits: 20,
+    levelColor: "#a16207",
+    shiny: true,
+    achievement: true,
+  },
+];
+
+const collectibleTypeById = Object.fromEntries(collectibleTypes.map((type) => [type.id, type]));
+const maxCollectionLevel = 100;
+const rewardDemoEnabled = new URLSearchParams(window.location.search).has("reward-demo");
+const rewardTestShortcutTimeoutMs = 900;
+let rewardTestShortcutSequence = "";
+let rewardTestShortcutTimer = 0;
+let pendingStorageSaveTimer = 0;
+const pendingStorageSaves = new Map();
+
 const state = {
   selectedChapterId: 1,
   summary: null,
@@ -313,11 +459,16 @@ const state = {
   currentUser: loadJson(sessionStorageKey),
   currentLanguage: loadLanguage(),
   pendingFocusKey: null,
-  pendingCelebrationKey: null,
+  pendingAchievementType: null,
 };
 
-if (state.currentUser?.preferredLanguage && datasets[state.currentUser.preferredLanguage]) {
+if (state.currentUser?.preferredLanguage && datasetSources[state.currentUser.preferredLanguage]) {
   state.currentLanguage = state.currentUser.preferredLanguage;
+}
+
+if (state.currentUser?.id && !state.currentUser.sessionToken) {
+  state.currentUser = null;
+  localStorage.removeItem(sessionStorageKey);
 }
 
 function loadJson(key) {
@@ -332,21 +483,79 @@ function saveJson(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function flushPendingStorageSaves() {
+  if (pendingStorageSaveTimer) {
+    window.clearTimeout(pendingStorageSaveTimer);
+    pendingStorageSaveTimer = 0;
+  }
+
+  pendingStorageSaves.forEach((getValue, key) => {
+    saveJson(key, getValue());
+  });
+  pendingStorageSaves.clear();
+}
+
+function saveJsonBatched(key, getValue, options = {}) {
+  if (options.immediate) {
+    pendingStorageSaves.delete(key);
+    saveJson(key, getValue());
+    return;
+  }
+
+  pendingStorageSaves.set(key, getValue);
+  if (pendingStorageSaveTimer) {
+    return;
+  }
+
+  pendingStorageSaveTimer = window.setTimeout(flushPendingStorageSaves, storageSaveDelayMs);
+}
+
 function loadLanguage() {
   const stored = localStorage.getItem(languageStorageKey);
   return stored === "ko" ? "ko" : "en";
+}
+
+function normalizeLanguage(value) {
+  return value === "ko" ? "ko" : "en";
+}
+
+async function ensureDataset(language = state.currentLanguage) {
+  const normalizedLanguage = normalizeLanguage(language);
+  if (datasets[normalizedLanguage]) {
+    return datasets[normalizedLanguage];
+  }
+
+  if (!datasetLoadPromises[normalizedLanguage]) {
+    datasetLoadPromises[normalizedLanguage] = fetch(datasetSources[normalizedLanguage])
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Could not load ${normalizedLanguage} quiz data.`);
+        }
+        return response.json();
+      })
+      .then((dataset) => {
+        datasets[normalizedLanguage] = dataset;
+        return dataset;
+      });
+  }
+
+  return datasetLoadPromises[normalizedLanguage];
+}
+
+async function ensureDatasets(languages) {
+  await Promise.all([...new Set([...languages].map(normalizeLanguage))].map(ensureDataset));
 }
 
 function saveLanguage() {
   localStorage.setItem(languageStorageKey, state.currentLanguage);
 }
 
-function saveProgress() {
-  saveJson(progressStorageKey, state.progress);
+function saveProgress(options = {}) {
+  saveJsonBatched(progressStorageKey, () => state.progress, options);
 }
 
-function saveDrafts() {
-  saveJson(draftStorageKey, state.drafts);
+function saveDrafts(options = {}) {
+  saveJsonBatched(draftStorageKey, () => state.drafts, options);
 }
 
 function saveRanks() {
@@ -360,8 +569,8 @@ function saveSession() {
 function clearLocalWork() {
   state.progress = {};
   state.drafts = {};
-  saveProgress();
-  saveDrafts();
+  saveProgress({ immediate: true });
+  saveDrafts({ immediate: true });
 }
 
 function getCopy() {
@@ -369,15 +578,15 @@ function getCopy() {
 }
 
 function getData(language = state.currentLanguage) {
-  return datasets[language] || datasets.en;
+  return datasets[normalizeLanguage(language)] || datasets.en || datasets.ko || null;
 }
 
 function getChapter() {
-  return getData().chapters.find((chapter) => chapter.id === state.selectedChapterId);
+  return getData()?.chapters.find((chapter) => chapter.id === state.selectedChapterId) || null;
 }
 
 function getNextChapter() {
-  const chapters = getData().chapters;
+  const chapters = getData()?.chapters || [];
   const currentIndex = chapters.findIndex((chapter) => chapter.id === state.selectedChapterId);
   if (currentIndex === -1) return null;
   return chapters[currentIndex + 1] ?? null;
@@ -514,6 +723,14 @@ function getTokenKey(chapterId, verseId, tokenIndex) {
   return `${state.currentUser?.id || "guest"}:${state.currentLanguage}:${getDifficulty()}:${chapterId}:${verseId}:${tokenIndex}`;
 }
 
+function getProgressPrefix(language = state.currentLanguage, difficulty = getDifficulty()) {
+  return `${state.currentUser?.id || "guest"}:${language}:${difficulty}:`;
+}
+
+function getCollectionProgressPrefix(language = state.currentLanguage) {
+  return `${state.currentUser?.id || "guest"}:${language}:`;
+}
+
 function getTokenProgress(chapterId, verseId, tokenIndex) {
   return state.progress[getTokenKey(chapterId, verseId, tokenIndex)] || null;
 }
@@ -527,18 +744,20 @@ function setTokenProgress(chapterId, verseId, tokenIndex, value) {
   saveProgress();
 }
 
-function setTokenDraft(chapterId, verseId, tokenIndex, value) {
+function setTokenDraft(chapterId, verseId, tokenIndex, value, options = {}) {
   const key = getTokenKey(chapterId, verseId, tokenIndex);
   if (value) {
     state.drafts[key] = value;
   } else {
     delete state.drafts[key];
   }
-  saveDrafts();
+  if (!options.deferSave) {
+    saveDrafts(options);
+  }
 }
 
 function clearChapterProgress(chapterId) {
-  const prefix = `${state.currentUser?.id || "guest"}:${state.currentLanguage}:${getDifficulty()}:${chapterId}:`;
+  const prefix = `${getProgressPrefix()}${chapterId}:`;
   Object.keys(state.progress).forEach((key) => {
     if (key.startsWith(prefix)) {
       delete state.progress[key];
@@ -549,8 +768,8 @@ function clearChapterProgress(chapterId) {
       delete state.drafts[key];
     }
   });
-  saveProgress();
-  saveDrafts();
+  saveProgress({ immediate: true });
+  saveDrafts({ immediate: true });
 }
 
 function isKeywordToken(token, language = state.currentLanguage) {
@@ -621,37 +840,59 @@ function pickIndicesFromCandidates(candidateIndices, tokens, limit, language = s
     .sort((left, right) => left - right);
 }
 
-function shouldHideToken(tokens, tokenIndex, difficulty, language = state.currentLanguage) {
-  const token = tokens[tokenIndex];
-  if (token.type !== "word" || !token.testable) {
-    return false;
+function getHiddenTokenIndexSet(tokens, difficulty, language = state.currentLanguage) {
+  const cacheKey = `${normalizeLanguage(language)}:${difficulty}`;
+  let tokenCache = hiddenTokenIndexCache.get(tokens);
+  if (!tokenCache) {
+    tokenCache = new Map();
+    hiddenTokenIndexCache.set(tokens, tokenCache);
   }
+
+  if (tokenCache.has(cacheKey)) {
+    return tokenCache.get(cacheKey);
+  }
+
+  const hiddenIndices = new Set();
   if (difficulty === "extreme") {
-    return true;
+    tokens.forEach((token, index) => {
+      if (token.type === "word" && token.testable) {
+        hiddenIndices.add(index);
+      }
+    });
+    tokenCache.set(cacheKey, hiddenIndices);
+    return hiddenIndices;
   }
-  const targetSegment = getSentenceSegments(tokens).find((segment) => segment.includes(tokenIndex));
-  if (!targetSegment) {
-    return false;
-  }
-  const candidateIndices = targetSegment.filter((index) => {
-    const currentToken = tokens[index];
-    if (difficulty === "difficult") {
-      return currentToken.type === "word" && currentToken.testable;
-    }
-    return isKeywordToken(currentToken, language);
+
+  getSentenceSegments(tokens).forEach((segment) => {
+    const candidateIndices = segment.filter((index) => {
+      const currentToken = tokens[index];
+      if (difficulty === "difficult") {
+        return currentToken.type === "word" && currentToken.testable;
+      }
+      return isKeywordToken(currentToken, language);
+    });
+
+    pickIndicesFromCandidates(
+      candidateIndices,
+      tokens,
+      getPerSentenceLimit(difficulty, candidateIndices.length),
+      language
+    ).forEach((index) => hiddenIndices.add(index));
   });
-  return pickIndicesFromCandidates(
-    candidateIndices,
-    tokens,
-    getPerSentenceLimit(difficulty, candidateIndices.length),
-    language
-  ).includes(tokenIndex);
+
+  tokenCache.set(cacheKey, hiddenIndices);
+  return hiddenIndices;
+}
+
+function shouldHideToken(tokens, tokenIndex, difficulty, language = state.currentLanguage) {
+  return getHiddenTokenIndexSet(tokens, difficulty, language).has(tokenIndex);
 }
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: {
       "Content-Type": "application/json",
+      ...(state.currentUser?.sessionToken ? { Authorization: `Bearer ${state.currentUser.sessionToken}` } : {}),
       ...(options.headers || {}),
     },
     ...options,
@@ -676,6 +917,7 @@ async function login(name, email) {
   state.currentLanguage = state.currentUser.preferredLanguage;
   saveLanguage();
   saveSession();
+  await ensureDataset(state.currentLanguage);
   elements.userName.textContent = payload.user.name;
   elements.authOverlay.classList.remove("visible");
   elements.authError.textContent = "";
@@ -736,7 +978,12 @@ async function loadLeaderboard() {
   const difficulty = encodeURIComponent(getDifficulty());
   try {
     const payload = await api(`/api/leaderboard?difficulty=${difficulty}&userId=${state.currentUser.id}`);
-    state.leaderboard = buildSharedLeaderboardRows(payload.rows);
+    const rows = Array.isArray(payload.rows) ? payload.rows : [];
+    const scoreLanguages = rows.flatMap((row) => (
+      Array.isArray(row.scores) ? row.scores.map((score) => score.language) : [row.language]
+    ));
+    await ensureDatasets([state.currentLanguage, ...scoreLanguages]);
+    state.leaderboard = buildSharedLeaderboardRows(rows);
     state.dbConnected = payload.db.connected;
   } catch {
     state.leaderboard = [];
@@ -750,6 +997,7 @@ async function hydrateSolvedProgress() {
     const language = encodeURIComponent(state.currentLanguage);
     const payload = await api(`/api/user-progress?userId=${state.currentUser.id}&language=${language}&difficulty=${difficulty}`);
     const data = getData();
+    if (!data) return;
     payload.rows.forEach((row) => {
       const token = data.chapters
         .find((chapter) => chapter.id === row.chapterId)
@@ -762,7 +1010,8 @@ async function hydrateSolvedProgress() {
         solved: true,
         value: blankPrompt.answer,
         hintLevel: 0,
-        metaText: getCopy().solvedPreviously,
+        rewardType: getCollectibleType(row.rewardType)?.id || "",
+        collectedAt: row.collectedAt || "",
       };
     });
     saveProgress();
@@ -806,12 +1055,16 @@ function renderStaticCopy() {
   elements.chaptersHeading.textContent = copy.chaptersHeading;
   elements.overviewLabel.textContent = copy.overviewLabel;
   elements.leaderboardLabel.textContent = copy.leaderboardLabel;
+  elements.leaderboardTitle.textContent = copy.leaderboardTitle(getDifficultyLabel(getDifficulty()));
   elements.recommendationsLabel.textContent = copy.recommendationsLabel;
   elements.recommendationsTitle.textContent = copy.recommendationsTitle;
   elements.quizLabel.textContent = copy.quizLabel;
   elements.difficultyLabel.textContent = copy.difficultyLabel;
   elements.chapterResetLabel.textContent = copy.chapterResetLabel;
   elements.resetChapter.textContent = copy.resetChapter;
+  elements.scopeTitle.textContent = copy.formatScopeTitle(state.selectedChapterId);
+  elements.overallProgressLabel.textContent = copy.overallProgressLabel(getDifficultyLabel(getDifficulty()));
+  elements.chapterTitle.textContent = copy.formatChapterTitle(state.selectedChapterId);
   if (!state.currentUser?.id) {
     elements.userName.textContent = copy.notSignedIn;
   }
@@ -820,6 +1073,7 @@ function renderStaticCopy() {
   }
   renderDifficultyOptions();
   syncLanguageControls();
+  renderRewardDemoPanel();
 }
 
 function renderAuth() {
@@ -834,6 +1088,7 @@ function renderAuth() {
 
 function renderChapterList() {
   const data = getData();
+  if (!data) return;
   elements.chapterList.innerHTML = "";
   data.chapters.forEach((chapter) => {
     const visibleBlanks = getChapterVisibleBlankCount(chapter);
@@ -859,29 +1114,50 @@ function renderChapterList() {
 }
 
 function getChapterSolvedCount(chapter) {
-  return chapter.verses.reduce((count, verse) => (
-    count + verse.tokens.filter((token, tokenIndex) => (
-      shouldHideToken(verse.tokens, tokenIndex, getDifficulty())
-      && Boolean(getTokenProgress(chapter.id, verse.id, tokenIndex)?.solved)
-    )).length
-  ), 0);
+  return chapter.verses.reduce((count, verse) => {
+    let solvedCount = 0;
+    getHiddenTokenIndexSet(verse.tokens, getDifficulty()).forEach((tokenIndex) => {
+      if (getTokenProgress(chapter.id, verse.id, tokenIndex)?.solved) {
+        solvedCount += 1;
+      }
+    });
+    return count + solvedCount;
+  }, 0);
 }
 
 function getChapterVisibleBlankCount(chapter, language = state.currentLanguage, difficulty = getDifficulty()) {
-  return chapter.verses.reduce((count, verse) => (
-    count + verse.tokens.filter((token, tokenIndex) => shouldHideToken(verse.tokens, tokenIndex, difficulty, language)).length
+  const cacheKey = `${normalizeLanguage(language)}:${difficulty}:${chapter.id}`;
+  if (chapterVisibleBlankCountCache.has(cacheKey)) {
+    return chapterVisibleBlankCountCache.get(cacheKey);
+  }
+
+  const count = chapter.verses.reduce((total, verse) => (
+    total + getHiddenTokenIndexSet(verse.tokens, difficulty, language).size
   ), 0);
+  chapterVisibleBlankCountCache.set(cacheKey, count);
+  return count;
 }
 
 function getOverallVisibleBlankCount(language = state.currentLanguage, difficulty = getDifficulty()) {
   const data = getData(language);
-  return data.chapters.reduce((count, chapter) => (
-    count + getChapterVisibleBlankCount(chapter, language, difficulty)
+  if (!data) return 0;
+  const cacheKey = `${normalizeLanguage(language)}:${difficulty}`;
+  if (overallVisibleBlankCountCache.has(cacheKey)) {
+    return overallVisibleBlankCountCache.get(cacheKey);
+  }
+
+  const count = data.chapters.reduce((total, chapter) => (
+    total + getChapterVisibleBlankCount(chapter, language, difficulty)
   ), 0);
+  overallVisibleBlankCountCache.set(cacheKey, count);
+  return count;
 }
 
 function getOverallDifficultyProgress() {
   const data = getData();
+  if (!data) {
+    return { visible: 0, solved: 0, percent: 0 };
+  }
   const totals = data.chapters.reduce((accumulator, chapter) => {
     accumulator.visible += getChapterVisibleBlankCount(chapter);
     accumulator.solved += getChapterSolvedCount(chapter);
@@ -891,6 +1167,212 @@ function getOverallDifficultyProgress() {
     ...totals,
     percent: totals.visible ? Math.round((totals.solved / totals.visible) * 100) : 100,
   };
+}
+
+function getCollectibleType(typeId) {
+  return collectibleTypeById[typeId] || null;
+}
+
+function createCollectibleCounts() {
+  return Object.fromEntries(collectibleTypes.map((type) => [type.id, 0]));
+}
+
+function normalizeCollectibleCounts(counts = {}) {
+  const normalized = createCollectibleCounts();
+  collectibleTypes.forEach((type) => {
+    normalized[type.id] = Math.max(0, Number(counts[type.id]) || 0);
+  });
+  return normalized;
+}
+
+function getCurrentLeaderboardRow() {
+  return state.leaderboard.find((row) => row.userId === state.currentUser?.id) || null;
+}
+
+function getLocalCollectionProgressItems() {
+  const prefix = getCollectionProgressPrefix();
+  const itemsByToken = new Map();
+
+  Object.entries(state.progress).forEach(([key, progress]) => {
+    if (!key.startsWith(prefix) || !progress?.solved) {
+      return;
+    }
+    const collectible = getCollectibleType(progress.rewardType);
+    if (!collectible) {
+      return;
+    }
+
+    const [, chapterId, verseId, tokenIndex] = key.slice(prefix.length).split(":");
+    const tokenKey = `${chapterId}:${verseId}:${tokenIndex}`;
+    const timestamp = Date.parse(progress.collectedAt || "") || 0;
+    const existing = itemsByToken.get(tokenKey);
+    if (!existing || timestamp < existing.timestamp) {
+      itemsByToken.set(tokenKey, {
+        rewardType: collectible.id,
+        timestamp,
+      });
+    }
+  });
+
+  return [...itemsByToken.values()];
+}
+
+function getCurrentCollectibleCounts() {
+  const leaderboardRow = getCurrentLeaderboardRow();
+  if (leaderboardRow?.rewardCounts) {
+    return normalizeCollectibleCounts(leaderboardRow.rewardCounts);
+  }
+
+  const counts = createCollectibleCounts();
+  getLocalCollectionProgressItems().forEach((progress) => {
+    const collectible = getCollectibleType(progress.rewardType);
+    if (collectible) {
+      counts[collectible.id] += 1;
+    }
+  });
+  return counts;
+}
+
+function getLatestCollectibleType() {
+  const leaderboardRow = getCurrentLeaderboardRow();
+  if (getCollectibleType(leaderboardRow?.latestRewardType)) {
+    return leaderboardRow.latestRewardType;
+  }
+
+  return getLocalCollectionProgressItems()
+    .sort((left, right) => (
+      right.timestamp - left.timestamp
+    ))[0]?.rewardType || "";
+}
+
+function getCollectionPoints(counts) {
+  return collectibleTypes.reduce((total, type) => (
+    total + ((Number(counts[type.id]) || 0) * type.levelUnits)
+  ), 0);
+}
+
+function getLevelRequirement(level) {
+  if (level >= maxCollectionLevel) {
+    return Infinity;
+  }
+  return Math.max(1, Math.round(level * Math.pow(1.035, level - 1)));
+}
+
+function calculateCollectionLevel(counts) {
+  let remainingPoints = getCollectionPoints(counts);
+  let level = 1;
+
+  while (level < maxCollectionLevel) {
+    const required = getLevelRequirement(level);
+    if (remainingPoints < required) {
+      break;
+    }
+    remainingPoints -= required;
+    level += 1;
+  }
+
+  const nextRequirement = getLevelRequirement(level);
+  return {
+    level,
+    current: level >= maxCollectionLevel ? nextRequirement : remainingPoints,
+    required: nextRequirement,
+    percent: level >= maxCollectionLevel ? 100 : Math.min(100, Math.round((remainingPoints / nextRequirement) * 100)),
+    totalPoints: getCollectionPoints(counts),
+  };
+}
+
+function formatLevelUnits(value) {
+  if (!Number.isFinite(value)) {
+    return "∞";
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function getCollectibleRarityId(collectible) {
+  return String(collectible?.rarity || "").toLowerCase();
+}
+
+function getCollectibleLabel(collectible) {
+  return getCopy().collectibleLabels?.[collectible?.id] || collectible?.label || "";
+}
+
+function getCollectibleRarityLabel(collectible) {
+  const rarityId = getCollectibleRarityId(collectible);
+  return getCopy().rarityLabels?.[rarityId] || collectible?.rarity || "";
+}
+
+function getCollectibleAccessibleLabel(collectible) {
+  return `${getCollectibleLabel(collectible)} ${getCollectibleRarityLabel(collectible)}`.trim();
+}
+
+function renderRewardBadge(typeId, options = {}) {
+  const collectible = getCollectibleType(typeId);
+  if (!collectible) {
+    return `<span class="reward-badge reward-empty" aria-label="${escapeHtml(getCopy().solvedRewardLabel)}">✓</span>`;
+  }
+  const label = getCollectibleAccessibleLabel(collectible);
+  const rarityId = getCollectibleRarityId(collectible);
+  const classes = [
+    "reward-badge",
+    `reward-${collectible.id}`,
+    `rarity-${rarityId}`,
+    collectible.shiny ? "is-shiny" : "",
+    options.large ? "large" : "",
+  ].filter(Boolean).join(" ");
+  return `<span class="${classes}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><span class="reward-icon">${escapeHtml(collectible.icon)}</span></span>`;
+}
+
+function renderCollectibleCounts(counts, options = {}) {
+  const normalizedCounts = normalizeCollectibleCounts(counts);
+  return collectibleTypes.map((type) => `
+    <div class="collectible-count${options.compact ? " compact" : ""}">
+      ${renderRewardBadge(type.id)}
+      <div>
+        <strong>${escapeHtml(getCollectibleLabel(type))}</strong>
+        <span class="collectible-rarity rarity-text-${getCollectibleRarityId(type)}">${escapeHtml(getCollectibleRarityLabel(type))} · ${normalizedCounts[type.id]}</span>
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderLevelsSection() {
+  if (!(elements.levelsSection instanceof HTMLElement)) return;
+  const copy = getCopy();
+  const counts = getCurrentCollectibleCounts();
+  const level = calculateCollectionLevel(counts);
+  const latestCollectible = getCollectibleType(getLatestCollectibleType());
+  const progressColor = latestCollectible?.levelColor || "#4d9f76";
+  const isMaxLevel = level.level >= maxCollectionLevel;
+  elements.levelsSection.innerHTML = `
+    <div class="levels-heading">
+      <div>
+        <p class="section-label">${copy.levelsLabel}</p>
+        <h3>${copy.levelsTitle}</h3>
+      </div>
+      <strong class="level-pill">${copy.currentLevel(level.level)}</strong>
+    </div>
+    <div class="level-progress">
+      <div class="level-progress-copy">
+        <span>${isMaxLevel ? copy.maxLevel : copy.levelProgress(formatLevelUnits(level.current), formatLevelUnits(level.required))}</span>
+        <strong>${isMaxLevel ? "100%" : `${level.percent}%`}</strong>
+      </div>
+      <div class="level-progress-track">
+        <div class="level-progress-fill" style="width: ${isMaxLevel ? 100 : level.percent}%; --level-color: ${progressColor};"></div>
+      </div>
+    </div>
+    <div class="collectible-grid">
+      ${renderCollectibleCounts(counts)}
+    </div>
+  `;
 }
 
 function buildSharedLeaderboardRows(rows) {
@@ -905,11 +1387,16 @@ function buildSharedLeaderboardRows(rows) {
           const language = score.language === "ko" ? "ko" : "en";
           const visibleCount = getOverallVisibleBlankCount(language, difficulty);
           const solvedCount = Number(score.solvedCount) || 0;
+          const rewardCounts = normalizeCollectibleCounts(score.rewardCounts);
           const ratio = visibleCount ? solvedCount / visibleCount : 0;
           return {
             language,
             solvedCount,
             visibleCount,
+            rewardCounts,
+            hasRewards: getCollectionPoints(rewardCounts) > 0,
+            latestRewardType: getCollectibleType(score.latestRewardType)?.id || "",
+            latestCollectedAt: score.latestCollectedAt || "",
             ratio,
             percent: Math.round(ratio * 100),
           };
@@ -923,10 +1410,11 @@ function buildSharedLeaderboardRows(rows) {
       return {
         userId: Number(row.userId),
         name: row.name,
+        collectionLevel: calculateCollectionLevel(bestScore.rewardCounts),
         ...bestScore,
       };
     })
-    .filter((row) => row.solvedCount > 0)
+    .filter((row) => row.solvedCount > 0 || row.hasRewards || row.userId === state.currentUser?.id)
     .sort((left, right) => (
       right.ratio - left.ratio
       || right.solvedCount - left.solvedCount
@@ -947,6 +1435,7 @@ function renderOverallProgress() {
 function renderStats() {
   const copy = getCopy();
   const chapter = getChapter();
+  if (!chapter) return;
   const chapterSummary = state.summary?.chapters?.find((item) => item.chapterId === chapter.id);
   const totalAttempts = chapterSummary?.attempts ?? 0;
   const accuracy = chapterSummary?.accuracy ?? 0;
@@ -991,20 +1480,29 @@ function renderLeaderboard() {
     let status = "";
     if (row.userId === state.currentUser?.id) {
       if (previousRank && row.rank < previousRank) {
-        status = "🔥";
+        status = "👟";
       } else if (previousRank && row.rank > previousRank) {
         status = "⬇";
       }
       state.previousRanks[difficultyKey] = row.rank;
     }
+    const levelText = copy.currentLevel(row.collectionLevel?.level || 1);
     return `
-      <article class="leaderboard-row${row.userId === state.currentUser?.id ? " current-user" : ""}">
-        <div>
-          <div><strong>${row.name}</strong><span class="leaderboard-status">${medal}${status}</span></div>
-          <div class="leaderboard-rank">${copy.rankLabel(row.rank)}</div>
+      <details class="leaderboard-entry${row.userId === state.currentUser?.id ? " current-user" : ""}">
+        <summary class="leaderboard-row">
+          <div>
+            <div><strong>${escapeHtml(row.name)}</strong><span class="leaderboard-status">${medal}${status}</span></div>
+            <div class="leaderboard-rank">${copy.rankLabel(row.rank)} · ${levelText}</div>
+          </div>
+          <div class="leaderboard-score">
+            <strong>${levelText}</strong>
+            <span>${row.percent}%</span>
+          </div>
+        </summary>
+        <div class="leaderboard-rewards">
+          ${renderCollectibleCounts(row.rewardCounts, { compact: true })}
         </div>
-        <div class="chapter-button-meta">${row.percent}%</div>
-      </article>
+      </details>
     `;
   }).join("");
 
@@ -1014,6 +1512,7 @@ function renderLeaderboard() {
 function renderRecommendations() {
   const copy = getCopy();
   const data = getData();
+  if (!data) return;
   elements.dbStatus.textContent = state.dbConnected
     ? copy.dbConnected
     : copy.dbDisconnected;
@@ -1024,10 +1523,14 @@ function renderRecommendations() {
       const visibleBlanks = getChapterVisibleBlankCount(chapter);
       const solvedBlanks = getChapterSolvedCount(chapter);
       const completion = visibleBlanks ? Math.round((solvedBlanks / visibleBlanks) * 100) : 100;
-      const firstUnsolvedVerse = chapter.verses.find((verse) => verse.tokens.some((token, tokenIndex) => (
-        shouldHideToken(verse.tokens, tokenIndex, difficulty)
-        && !getTokenProgress(chapter.id, verse.id, tokenIndex)?.solved
-      )))?.id ?? null;
+      const firstUnsolvedVerse = chapter.verses.find((verse) => {
+        for (const tokenIndex of getHiddenTokenIndexSet(verse.tokens, difficulty)) {
+          if (!getTokenProgress(chapter.id, verse.id, tokenIndex)?.solved) {
+            return true;
+          }
+        }
+        return false;
+      })?.id ?? null;
       return { chapterId: chapter.id, visibleBlanks, solvedBlanks, completion, firstUnsolvedVerse };
     })
     .filter((chapter) => chapter.visibleBlanks > 0)
@@ -1063,12 +1566,46 @@ function createAnswerMeta() {
   return meta;
 }
 
-function setMetaContent(meta, { status = "", detail = "", hint = "" } = {}) {
+function createRewardBadgeElement(typeId, fallbackIcon = "✓") {
+  const badge = document.createElement("span");
+  const collectible = getCollectibleType(typeId);
+  if (!collectible) {
+    badge.className = "reward-badge reward-empty";
+    const icon = document.createElement("span");
+    icon.className = "reward-icon";
+    icon.textContent = fallbackIcon;
+    badge.append(icon);
+    badge.setAttribute("aria-label", getCopy().solvedRewardLabel);
+    return badge;
+  }
+
+  const rarityId = getCollectibleRarityId(collectible);
+  badge.className = [
+    "reward-badge",
+    `reward-${collectible.id}`,
+    `rarity-${rarityId}`,
+    collectible.shiny ? "is-shiny" : "",
+  ].filter(Boolean).join(" ");
+  const icon = document.createElement("span");
+  icon.className = "reward-icon";
+  icon.textContent = collectible.icon;
+  badge.append(icon);
+  badge.title = `${getCollectibleLabel(collectible)} (${getCollectibleRarityLabel(collectible)})`;
+  badge.setAttribute("aria-label", badge.title);
+  return badge;
+}
+
+function setMetaContent(meta, { status = "", detail = "", hint = "", rewardType = "", fallbackIcon = "" } = {}) {
   const classNames = ["answer-meta"];
   if (status) classNames.push(status);
   if (hint) classNames.push("has-hint");
+  if (rewardType || fallbackIcon) classNames.push("has-reward");
   meta.className = classNames.join(" ");
   meta.innerHTML = "";
+
+  if (rewardType || fallbackIcon) {
+    meta.append(createRewardBadgeElement(rewardType, fallbackIcon || "✓"));
+  }
 
   if (detail) {
     const detailSpan = document.createElement("span");
@@ -1091,113 +1628,223 @@ function focusQuizInput(input) {
   input.focus();
 }
 
+function focusInputByKey(focusKey) {
+  if (!focusKey) return false;
+  const target = document.querySelector(`[data-focus-key="${focusKey}"]`);
+  if (target instanceof HTMLInputElement) {
+    focusQuizInput(target);
+    return true;
+  }
+  return false;
+}
+
 function renderPostAttemptPanels() {
   if (!state.currentUser?.id) return;
   renderChapterList();
   renderLeaderboard();
+  renderLevelsSection();
   renderRecommendations();
   renderOverallProgress();
   renderStats();
 }
 
-function shouldCelebratePerfectAnswer(result) {
-  return Boolean(
-    result?.isCorrect
-    && Number(result.attemptCount) === 1
-    && Number(result.correctCount) === 1
-    && Number(result.correctPercentage) === 100
-  );
+function getAchievementDisplayLabel(collectible) {
+  return getCopy().achievementLabels?.[collectible?.id] || getCollectibleLabel(collectible);
 }
 
-function launchSparkles(input) {
-  const wrapper = input.parentElement;
-  if (!(wrapper instanceof HTMLElement)) return;
+function launchAchievementPrize(rewardType) {
+  const collectible = getCollectibleType(rewardType);
+  if (!collectible?.achievement) return;
 
-  wrapper.querySelectorAll(".sparkle-burst").forEach((node) => node.remove());
+  document.querySelectorAll(".achievement-overlay, .achievement-chest-overlay").forEach((node) => node.remove());
 
-  const burst = document.createElement("span");
-  burst.className = "sparkle-burst";
-  burst.setAttribute("aria-hidden", "true");
+  const overlay = document.createElement("div");
+  overlay.className = `achievement-overlay reward-${collectible.id}`;
+  overlay.setAttribute("role", "status");
+  overlay.setAttribute("aria-live", "polite");
+  overlay.innerHTML = `
+    <div class="achievement-aura"></div>
+    ${renderRewardBadge(collectible.id, { large: true })}
+    <div class="achievement-copy">
+      <strong>${escapeHtml(getAchievementDisplayLabel(collectible))}</strong>
+      <span class="collectible-rarity rarity-text-${getCollectibleRarityId(collectible)}">${escapeHtml(getCollectibleRarityLabel(collectible))}</span>
+      <span class="achievement-claim">${escapeHtml(getCopy().tapToClaim)}</span>
+    </div>
+  `;
+  document.body.append(overlay);
 
-  const wrapperRect = wrapper.getBoundingClientRect();
-  const inputRect = input.getBoundingClientRect();
-  const centerX = inputRect.left - wrapperRect.left + (inputRect.width / 2);
-  const centerY = inputRect.top - wrapperRect.top + (inputRect.height / 2);
-  burst.style.left = `${centerX}px`;
-  burst.style.top = `${centerY}px`;
+  const removeOverlay = () => overlay.remove();
+  overlay.addEventListener("click", removeOverlay, { once: true });
+}
 
-  const innerRadiusX = (input.offsetWidth / 2) + 8;
-  const innerRadiusY = (input.offsetHeight / 2) + 8;
-  const outerRadiusX = innerRadiusX + 22;
-  const outerRadiusY = innerRadiusY + 22;
-  const sparkleCount = 12;
+function launchAchievement(rewardType) {
+  const collectible = getCollectibleType(rewardType);
+  if (!collectible?.achievement) return;
 
-  Array.from({ length: sparkleCount }).forEach((_, index) => {
-    const angle = ((Math.PI * 2) / sparkleCount) * index - (Math.PI / 2);
-    const startX = Math.cos(angle) * innerRadiusX;
-    const startY = Math.sin(angle) * innerRadiusY;
-    const endX = Math.cos(angle) * outerRadiusX;
-    const endY = Math.sin(angle) * outerRadiusY;
-    const sparkle = document.createElement("span");
-    sparkle.className = "sparkle";
-    sparkle.style.setProperty("--sx", `${startX}px`);
-    sparkle.style.setProperty("--sy", `${startY}px`);
-    sparkle.style.setProperty("--dx", `${endX}px`);
-    sparkle.style.setProperty("--dy", `${endY}px`);
-    sparkle.style.setProperty("--delay", `${index * 32}ms`);
-    sparkle.style.setProperty("--rotation", `${(index * 27) - 18}deg`);
-    sparkle.style.setProperty("--scale", index % 4 === 0 ? "1.2" : "0.95");
-    burst.append(sparkle);
+  document.querySelectorAll(".achievement-overlay, .achievement-chest-overlay").forEach((node) => node.remove());
+
+  const chestOverlay = document.createElement("div");
+  chestOverlay.className = `achievement-chest-overlay reward-${collectible.id}`;
+  chestOverlay.setAttribute("role", "button");
+  chestOverlay.setAttribute("tabindex", "0");
+  chestOverlay.setAttribute("aria-label", getCopy().tapToOpenTreasureChest);
+  chestOverlay.innerHTML = `
+    <div class="reward-chest-scene" aria-hidden="true">
+      <div class="reward-chest-light"></div>
+      <div class="reward-chest">
+        <span class="reward-chest-lid"></span>
+        <span class="reward-chest-body"></span>
+        <span class="reward-chest-band reward-chest-band-left"></span>
+        <span class="reward-chest-band reward-chest-band-mid-left"></span>
+        <span class="reward-chest-band reward-chest-band-mid-right"></span>
+        <span class="reward-chest-band reward-chest-band-right"></span>
+        <span class="reward-chest-latch"></span>
+        <span class="reward-chest-lock"></span>
+        <span class="reward-chest-keyhole"></span>
+        <span class="reward-chest-foot reward-chest-foot-left"></span>
+        <span class="reward-chest-foot reward-chest-foot-right"></span>
+      </div>
+    </div>
+    <div class="achievement-copy chest-copy">
+      <span class="achievement-claim">${escapeHtml(getCopy().tapToOpen)}</span>
+    </div>
+  `;
+
+  let chestOpened = false;
+  const openChest = () => {
+    if (chestOpened) return;
+    chestOpened = true;
+    chestOverlay.remove();
+    launchAchievementPrize(collectible.id);
+  };
+  chestOverlay.addEventListener("click", openChest, { once: true });
+  chestOverlay.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openChest();
   });
+  document.body.append(chestOverlay);
+  chestOverlay.focus({ preventScroll: true });
+}
 
-  wrapper.append(burst);
-  window.setTimeout(() => burst.remove(), 1000);
+function showDemoReward(rewardType) {
+  const collectible = getCollectibleType(rewardType);
+  if (!collectible) return;
+  const preview = document.querySelector("#reward-demo-preview");
+  if (preview instanceof HTMLElement) {
+    preview.innerHTML = `
+      ${renderRewardBadge(collectible.id)}
+      <strong>${escapeHtml(getCollectibleLabel(collectible))}</strong>
+      <span class="collectible-rarity rarity-text-${getCollectibleRarityId(collectible)}">${escapeHtml(getCollectibleRarityLabel(collectible))}</span>
+    `;
+  }
+  launchAchievement(collectible.id);
+}
+
+function playRewardDemo(rewardType = "all") {
+  const demoTypes = rewardType === "all"
+    ? collectibleTypes
+    : [getCollectibleType(rewardType)].filter(Boolean);
+  let delay = 0;
+  demoTypes.forEach((type) => {
+    window.setTimeout(() => showDemoReward(type.id), delay);
+    delay += type.achievement ? 2800 : 700;
+  });
+}
+
+function setupRewardDemo() {
+  window.johnQuizRewardDemo = playRewardDemo;
+  if (!rewardDemoEnabled) return;
+
+  const panel = document.createElement("div");
+  panel.className = "reward-demo-panel";
+  renderRewardDemoPanel(panel);
+  panel.addEventListener("click", (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest("[data-reward-demo]")
+      : null;
+    if (!(button instanceof HTMLElement)) return;
+    showDemoReward(button.dataset.rewardDemo);
+  });
+  document.body.append(panel);
+}
+
+function renderRewardDemoPanel(panel = document.querySelector(".reward-demo-panel")) {
+  if (!(panel instanceof HTMLElement)) return;
+  panel.setAttribute("aria-label", getCopy().demoLabel);
+  panel.innerHTML = `
+    <div id="reward-demo-preview" class="reward-demo-preview">
+      ${renderRewardBadge("fire")}
+      <strong>${escapeHtml(getCopy().demoLabel)}</strong>
+      <span>${escapeHtml(getCopy().collectiblesLabel)}</span>
+    </div>
+    <div class="reward-demo-buttons">
+      ${collectibleTypes.map((type) => `
+        <button type="button" class="secondary-button reward-demo-button" data-reward-demo="${type.id}" title="${escapeHtml(getCollectibleLabel(type))}">
+          ${renderRewardBadge(type.id)}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function handleRewardTestShortcut(event) {
+  if (!event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.repeat) {
+    return;
+  }
+
+  const key = event.key.toLowerCase();
+  if (key !== "d" && key !== "f") {
+    return;
+  }
+
+  event.preventDefault();
+  window.clearTimeout(rewardTestShortcutTimer);
+  rewardTestShortcutSequence = `${rewardTestShortcutSequence}${key}`.slice(-2);
+
+  if (rewardTestShortcutSequence === "df") {
+    rewardTestShortcutSequence = "";
+    launchAchievement("golden_apple");
+    return;
+  }
+
+  if (rewardTestShortcutSequence === "fd") {
+    rewardTestShortcutSequence = "";
+    launchAchievement("wooden_cross");
+    return;
+  }
+
+  rewardTestShortcutTimer = window.setTimeout(() => {
+    rewardTestShortcutSequence = "";
+  }, rewardTestShortcutTimeoutMs);
 }
 
 function findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex) {
   const chapter = getChapter();
+  if (!chapter) return null;
   const difficulty = getDifficulty();
   let passedCurrent = false;
   let nextFocusKey = null;
 
   for (const verse of chapter.verses) {
-    verse.tokens.forEach((token, currentTokenIndex) => {
-      if (token.type === "space" || token.type === "punct") return;
-      if (!shouldHideToken(verse.tokens, currentTokenIndex, difficulty)) return;
-
+    for (const currentTokenIndex of getHiddenTokenIndexSet(verse.tokens, difficulty)) {
       if (!passedCurrent) {
         if (verse.id === verseId && currentTokenIndex === tokenIndex && chapter.id === chapterId) {
           passedCurrent = true;
         }
-        return;
+        continue;
       }
 
       const progress = getTokenProgress(chapter.id, verse.id, currentTokenIndex);
       if (!progress?.solved && !nextFocusKey) {
         nextFocusKey = `${chapter.id}:${verse.id}:${currentTokenIndex}`;
       }
-    });
+    }
 
     if (nextFocusKey) return nextFocusKey;
   }
 
   return nextFocusKey;
-}
-
-function maybeSubmitOnExactMatch(input) {
-  if (
-    !(input instanceof HTMLInputElement) ||
-    input.disabled ||
-    input.dataset.isComposing === "true" ||
-    input.dataset.submitting === "true"
-  ) {
-    return;
-  }
-
-  const answer = getSubmittedAnswerForInput(input);
-  if (answer && answer === input.dataset.answer) {
-    submitAnswer(input);
-  }
 }
 
 function applyProgressToInput(input, meta, progress, displayValue) {
@@ -1216,7 +1863,8 @@ function applyProgressToInput(input, meta, progress, displayValue) {
     input.disabled = true;
     setMetaContent(meta, {
       status: "correct",
-      detail: progress.metaText || copy.correct,
+      rewardType: progress.rewardType || "",
+      fallbackIcon: "✓",
     });
     return;
   }
@@ -1257,8 +1905,9 @@ function refreshPostAttemptData() {
     });
 }
 
-async function submitAnswer(input) {
+async function submitAnswer(input, options = {}) {
   if (input.disabled || !state.currentUser?.id || input.dataset.submitting === "true") return;
+  const shouldAdvanceOnCorrect = Boolean(options.advanceOnCorrect);
   const answer = getSubmittedAnswerForInput(input);
   const expected = input.dataset.answer;
   const chapterId = Number(input.dataset.chapterId);
@@ -1274,7 +1923,12 @@ async function submitAnswer(input) {
     return;
   }
 
+  const locallyCorrect = answer === expected;
+  const nextFocusKey = locallyCorrect
+    ? findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex)
+    : null;
   input.dataset.submitting = "true";
+
   try {
     const result = await api("/api/attempt", {
       method: "POST",
@@ -1296,14 +1950,19 @@ async function submitAnswer(input) {
         solved: true,
         value: input.dataset.displayValue,
         hintLevel: 0,
-        metaText: buildMetaText(result),
+        rewardType: getCollectibleType(result.rewardType)?.id || "",
+        collectedAt: result.collectedAt || new Date().toISOString(),
       };
       setTokenProgress(chapterId, verseId, tokenIndex, progress);
       setTokenDraft(chapterId, verseId, tokenIndex, "");
-      state.pendingFocusKey = findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex);
-      state.pendingCelebrationKey = shouldCelebratePerfectAnswer(result)
-        ? `${chapterId}:${verseId}:${tokenIndex}`
-        : null;
+      state.pendingFocusKey = null;
+      applyProgressToInput(input, meta, progress, input.dataset.displayValue);
+      if (shouldAdvanceOnCorrect) {
+        focusInputByKey(nextFocusKey);
+      }
+      if (result.rewardAwarded) {
+        launchAchievement(progress.rewardType);
+      }
     } else {
       const progress = {
         solved: false,
@@ -1313,11 +1972,11 @@ async function submitAnswer(input) {
       };
       setTokenProgress(chapterId, verseId, tokenIndex, progress);
       setTokenDraft(chapterId, verseId, tokenIndex, "");
-      state.pendingFocusKey = `${chapterId}:${verseId}:${tokenIndex}`;
-      state.pendingCelebrationKey = null;
+      state.pendingFocusKey = null;
+      applyProgressToInput(input, meta, progress, input.dataset.displayValue);
     }
 
-    render();
+    renderPostAttemptPanels();
     refreshPostAttemptData();
   } catch (error) {
     setMetaContent(meta, {
@@ -1362,7 +2021,9 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      submitAnswer(input);
+      if (input.dataset.isComposing !== "true") {
+        submitAnswer(input, { advanceOnCorrect: true });
+      }
     }
   });
   input.addEventListener("compositionstart", () => {
@@ -1371,11 +2032,9 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   input.addEventListener("compositionend", () => {
     input.dataset.isComposing = "false";
     setTokenDraft(chapterId, verseId, tokenIndex, input.value.trim());
-    maybeSubmitOnExactMatch(input);
   });
   input.addEventListener("input", () => {
     setTokenDraft(chapterId, verseId, tokenIndex, input.value.trim());
-    maybeSubmitOnExactMatch(input);
   });
   input.addEventListener("blur", () => submitAnswer(input));
   const meta = createAnswerMeta();
@@ -1396,6 +2055,7 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
 
 function renderQuiz() {
   const chapter = getChapter();
+  if (!chapter) return;
   const nextChapter = getNextChapter();
   const difficulty = getDifficulty();
   elements.chapterTitle.textContent = getCopy().formatChapterTitle(chapter.id);
@@ -1430,12 +2090,9 @@ function renderQuiz() {
     state.pendingFocusKey = null;
   }
 
-  if (state.pendingCelebrationKey) {
-    const target = document.querySelector(`[data-focus-key="${state.pendingCelebrationKey}"]`);
-    if (target instanceof HTMLInputElement) {
-      window.requestAnimationFrame(() => launchSparkles(target));
-    }
-    state.pendingCelebrationKey = null;
+  if (state.pendingAchievementType) {
+    window.requestAnimationFrame(() => launchAchievement(state.pendingAchievementType));
+    state.pendingAchievementType = null;
   }
 }
 
@@ -1461,16 +2118,18 @@ async function resetCurrentChapter() {
   }
 }
 
-function autosaveVisibleDrafts() {
+function autosaveVisibleDrafts(options = {}) {
   document.querySelectorAll(".quiz-input").forEach((input) => {
     if (input.disabled || !state.currentUser?.id) return;
     setTokenDraft(
       Number(input.dataset.chapterId),
       Number(input.dataset.verseId),
       Number(input.dataset.tokenIndex),
-      input.value.trim()
+      input.value.trim(),
+      { deferSave: true }
     );
   });
+  saveDrafts(options);
 }
 
 async function handleDifficultyChange() {
@@ -1483,16 +2142,18 @@ function render() {
   renderStaticCopy();
   renderAuth();
   if (!state.currentUser?.id) return;
+  if (!getData()) return;
   renderChapterList();
   renderLeaderboard();
+  renderLevelsSection();
   renderRecommendations();
   renderOverallProgress();
   renderStats();
   renderQuiz();
 }
 
-function setLanguage(language, options = {}) {
-  const nextLanguage = language === "ko" ? "ko" : "en";
+async function setLanguage(language, options = {}) {
+  const nextLanguage = normalizeLanguage(language);
   if (state.currentLanguage === nextLanguage && !options.force) {
     renderStaticCopy();
     render();
@@ -1502,6 +2163,7 @@ function setLanguage(language, options = {}) {
   state.currentLanguage = nextLanguage;
   saveLanguage();
   renderStaticCopy();
+  await ensureDataset(nextLanguage);
 
   if (state.currentUser) {
     state.currentUser.language = nextLanguage;
@@ -1514,22 +2176,31 @@ function setLanguage(language, options = {}) {
     return;
   }
 
-  Promise.all([persistUserPreferences(), hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]).finally(render);
+  await Promise.all([persistUserPreferences(), hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]);
+  render();
 }
 
 elements.authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  setLanguage(elements.authLanguage.value, { force: true });
   try {
+    await setLanguage(elements.authLanguage.value, { force: true });
     await login(elements.authName.value.trim(), elements.authEmail.value.trim());
   } catch (error) {
     elements.authError.textContent = error.message;
   }
 });
 
-elements.authLanguage.addEventListener("change", () => setLanguage(elements.authLanguage.value));
+elements.authLanguage.addEventListener("change", () => {
+  setLanguage(elements.authLanguage.value).catch((error) => {
+    elements.authError.textContent = error.message;
+  });
+});
 elements.languageToggleButtons.forEach((button) => {
-  button.addEventListener("click", () => setLanguage(button.dataset.languageToggle));
+  button.addEventListener("click", () => {
+    setLanguage(button.dataset.languageToggle).catch((error) => {
+      elements.dbStatus.textContent = error.message;
+    });
+  });
 });
 elements.signOut.addEventListener("click", signOut);
 elements.difficultySelect.addEventListener("change", handleDifficultyChange);
@@ -1541,19 +2212,38 @@ elements.nextChapter.addEventListener("click", () => {
   render();
   elements.chapterTitle.scrollIntoView({ block: "start", behavior: "smooth" });
 });
+setupRewardDemo();
 
 setInterval(autosaveVisibleDrafts, autosaveIntervalMs);
-window.addEventListener("beforeunload", autosaveVisibleDrafts);
+window.addEventListener("beforeunload", () => {
+  autosaveVisibleDrafts({ immediate: true });
+  flushPendingStorageSaves();
+});
+window.addEventListener("keydown", handleRewardTestShortcut);
 
-const savedDifficulty = localStorage.getItem(difficultyStorageKey);
-if (savedDifficulty && getCopy().difficultyDescriptions[savedDifficulty]) {
-  elements.difficultySelect.value = savedDifficulty;
-} else {
-  elements.difficultySelect.value = "easy";
+function restoreSavedDifficulty() {
+  const savedDifficulty = localStorage.getItem(difficultyStorageKey);
+  if (savedDifficulty && getCopy().difficultyDescriptions[savedDifficulty]) {
+    elements.difficultySelect.value = savedDifficulty;
+  } else {
+    elements.difficultySelect.value = "easy";
+  }
 }
 
-render();
+async function initializeApp() {
+  renderStaticCopy();
+  renderAuth();
+  await ensureDataset(state.currentLanguage);
+  restoreSavedDifficulty();
+  render();
 
-if (state.currentUser?.id) {
-  Promise.all([hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]).finally(render);
+  if (state.currentUser?.id) {
+    await Promise.all([hydrateSolvedProgress(), loadSummary(), loadLeaderboard()]);
+    render();
+  }
 }
+
+initializeApp().catch((error) => {
+  elements.dbStatus.textContent = error.message || getCopy().dbAnalyticsError;
+  elements.authError.textContent = error.message || "";
+});
