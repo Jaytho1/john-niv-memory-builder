@@ -1972,6 +1972,9 @@ async function submitAnswer(input, options = {}) {
       setTokenDraft(chapterId, verseId, tokenIndex, "");
       state.pendingFocusKey = null;
       applyProgressToInput(input, meta, progress, input.dataset.displayValue);
+      if (shouldAdvanceOnCorrect) {
+        focusQuizInput(input);
+      }
     }
 
     renderPostAttemptPanels();
