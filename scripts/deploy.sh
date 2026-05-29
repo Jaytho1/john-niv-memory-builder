@@ -29,15 +29,23 @@ else
 fi
 
 APP_PORT="${PORT:-43117}"
+DATABASE_CONFIGURED="false"
 if [[ -f "$APP_DIR/.env" ]]; then
   ENV_PORT="$(grep '^PORT=' "$APP_DIR/.env" | cut -d= -f2- || true)"
   APP_PORT="${ENV_PORT:-$APP_PORT}"
+  if grep -q '^DATABASE_URL=' "$APP_DIR/.env"; then
+    DATABASE_CONFIGURED="true"
+  fi
 fi
 
 echo "Checking local app health..."
 for attempt in {1..30}; do
-  if curl --fail --silent --show-error "http://127.0.0.1:${APP_PORT}/health" >/dev/null; then
-    break
+  HEALTH_PAYLOAD="$(curl --fail --silent --show-error "http://127.0.0.1:${APP_PORT}/health" || true)"
+  if [[ -n "$HEALTH_PAYLOAD" ]]; then
+    echo "Health response: $HEALTH_PAYLOAD"
+    if [[ "$DATABASE_CONFIGURED" != "true" || "$HEALTH_PAYLOAD" == *'"connected":true'* ]]; then
+      break
+    fi
   fi
 
   if [[ "$attempt" -eq 30 ]]; then
