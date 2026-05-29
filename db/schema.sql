@@ -3,8 +3,6 @@ create table if not exists users (
   name text not null,
   email text not null unique,
   preferred_language text not null default 'en',
-  session_token_hash text,
-  session_token_created_at timestamptz,
   created_at timestamptz not null default now()
 );
 

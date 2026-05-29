@@ -466,11 +466,6 @@ if (state.currentUser?.preferredLanguage && datasetSources[state.currentUser.pre
   state.currentLanguage = state.currentUser.preferredLanguage;
 }
 
-if (state.currentUser?.id && !state.currentUser.sessionToken) {
-  state.currentUser = null;
-  localStorage.removeItem(sessionStorageKey);
-}
-
 function loadJson(key) {
   try {
     return JSON.parse(localStorage.getItem(key) || "{}");
@@ -892,7 +887,6 @@ async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: {
       "Content-Type": "application/json",
-      ...(state.currentUser?.sessionToken ? { Authorization: `Bearer ${state.currentUser.sessionToken}` } : {}),
       ...(options.headers || {}),
     },
     ...options,
@@ -1358,11 +1352,9 @@ function renderLevelsSection() {
         <p class="section-label">${copy.levelsLabel}</p>
         <h3>${copy.levelsTitle}</h3>
       </div>
-      <strong class="level-pill">${copy.currentLevel(level.level)}</strong>
     </div>
     <div class="level-progress">
       <div class="level-progress-copy">
-        <span>${isMaxLevel ? copy.maxLevel : copy.levelProgress(formatLevelUnits(level.current), formatLevelUnits(level.required))}</span>
         <strong>${isMaxLevel ? "100%" : `${level.percent}%`}</strong>
       </div>
       <div class="level-progress-track">

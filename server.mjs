@@ -1,6 +1,5 @@
 import "dotenv/config";
 import { createServer } from "node:http";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,14 +86,6 @@ async function initDb() {
   await pool.query(`
     alter table users
       add column if not exists preferred_language text not null default 'en';
-  `);
-  await pool.query(`
-    alter table users
-      add column if not exists session_token_hash text;
-  `);
-  await pool.query(`
-    alter table users
-      add column if not exists session_token_created_at timestamptz;
   `);
 
   await pool.query(`
@@ -431,71 +422,6 @@ function buildAttemptStats(correctCount, attemptCount) {
   };
 }
 
-function createSessionToken() {
-  return randomBytes(32).toString("base64url");
-}
-
-function hashSessionToken(token) {
-  return createHash("sha256").update(String(token || ""), "utf8").digest("hex");
-}
-
-function sessionTokenMatches(token, storedHash) {
-  if (!token || !storedHash) {
-    return false;
-  }
-
-  const candidate = Buffer.from(hashSessionToken(token), "hex");
-  const stored = Buffer.from(storedHash, "hex");
-  return candidate.length === stored.length && timingSafeEqual(candidate, stored);
-}
-
-function getBearerToken(request) {
-  const header = request.headers.authorization || "";
-  if (!header.startsWith("Bearer ")) {
-    return "";
-  }
-  return header.slice("Bearer ".length).trim();
-}
-
-function publicUser(user, sessionToken) {
-  return {
-    id: Number(user.id),
-    name: user.name,
-    email: user.email,
-    preferredLanguage: normalizeLanguage(user.preferredLanguage ?? user.preferred_language),
-    sessionToken,
-  };
-}
-
-async function requireUserSession(request, response, userId) {
-  const token = getBearerToken(request);
-  if (!userId || !token) {
-    sendJson(response, 401, { error: "Please sign in again." });
-    return false;
-  }
-
-  if (!(pool && dbConnected)) {
-    const user = [...memoryUsers.values()].find((item) => item.id === userId);
-    if (user && sessionTokenMatches(token, user.sessionTokenHash)) {
-      return true;
-    }
-    sendJson(response, 401, { error: "Please sign in again." });
-    return false;
-  }
-
-  const result = await pool.query(
-    `select session_token_hash from users where id = $1 limit 1;`,
-    [userId]
-  );
-
-  if (sessionTokenMatches(token, result.rows[0]?.session_token_hash)) {
-    return true;
-  }
-
-  sendJson(response, 401, { error: "Please sign in again." });
-  return false;
-}
-
 function normalizeRewardType(value) {
   const rewardType = String(value || "");
   return rewardTypeIds.has(rewardType) ? rewardType : null;
@@ -525,6 +451,15 @@ function shouldAwardReward(correctCount, attemptCount, isCorrect) {
 
 function normalizeLanguage(value) {
   return value === "ko" ? "ko" : "en";
+}
+
+function toClientUser(user) {
+  return {
+    id: Number(user.id),
+    name: user.name,
+    email: user.email,
+    preferredLanguage: normalizeLanguage(user.preferredLanguage ?? user.preferred_language),
+  };
 }
 
 function getAttemptIdentity(attempt) {
@@ -831,8 +766,6 @@ async function handleLogin(request, response) {
   const name = String(body.name || "").trim();
   const email = String(body.email || "").trim().toLowerCase();
   const preferredLanguage = normalizeLanguage(body.preferredLanguage);
-  const sessionToken = createSessionToken();
-  const sessionTokenHash = hashSessionToken(sessionToken);
 
   if (!name || !email) {
     sendJson(response, 400, { error: "Name and email are required." });
@@ -841,8 +774,7 @@ async function handleLogin(request, response) {
 
   if (!(pool && dbConnected)) {
     const user = getOrCreateMemoryUser(name, email, preferredLanguage);
-    user.sessionTokenHash = sessionTokenHash;
-    sendJson(response, 200, { user: publicUser(user, sessionToken) });
+    sendJson(response, 200, { user: toClientUser(user) });
     return;
   }
 
@@ -859,48 +791,35 @@ async function handleLogin(request, response) {
           update users
           set
             name = $1,
-            preferred_language = $2,
-            session_token_hash = $3,
-            session_token_created_at = now()
-          where email = $4;
+            preferred_language = $2
+          where email = $3;
         `,
-        [name, preferredLanguage, sessionTokenHash, email]
-      );
-    } else {
-      await pool.query(
-        `
-          update users
-          set
-            session_token_hash = $1,
-            session_token_created_at = now()
-          where email = $2;
-        `,
-        [sessionTokenHash, email]
+        [name, preferredLanguage, email]
       );
     }
 
     sendJson(response, 200, {
-      user: publicUser({
+      user: toClientUser({
         id: existingUser.id,
         name,
         email: existingUser.email,
         preferred_language: preferredLanguage,
-      }, sessionToken),
+      }),
     });
     return;
   }
 
   const inserted = await pool.query(
     `
-      insert into users (name, email, preferred_language, session_token_hash, session_token_created_at)
-      values ($1, $2, $3, $4, now())
+      insert into users (name, email, preferred_language)
+      values ($1, $2, $3)
       returning id, name, email, preferred_language;
     `,
-    [name, email, preferredLanguage, sessionTokenHash]
+    [name, email, preferredLanguage]
   );
 
   sendJson(response, 200, {
-    user: publicUser(inserted.rows[0], sessionToken),
+    user: toClientUser(inserted.rows[0]),
   });
 }
 
@@ -915,10 +834,6 @@ async function handleUserPreferences(request, response) {
     return;
   }
 
-  if (!(await requireUserSession(request, response, userId))) {
-    return;
-  }
-
   if (!(pool && dbConnected)) {
     const user = [...memoryUsers.values()].find((item) => item.id === userId);
     if (!user) {
@@ -929,7 +844,7 @@ async function handleUserPreferences(request, response) {
       user.name = name;
     }
     user.preferredLanguage = preferredLanguage;
-    sendJson(response, 200, { user: publicUser(user, getBearerToken(request)) });
+    sendJson(response, 200, { user: toClientUser(user) });
     return;
   }
 
@@ -950,12 +865,7 @@ async function handleUserPreferences(request, response) {
     return;
   }
 
-  sendJson(response, 200, { user: {
-    id: Number(updated.rows[0].id),
-    name: updated.rows[0].name,
-    email: updated.rows[0].email,
-    preferredLanguage: updated.rows[0].preferred_language,
-  } });
+  sendJson(response, 200, { user: toClientUser(updated.rows[0]) });
 }
 
 async function handleUserProgress(request, response, url) {
@@ -965,10 +875,6 @@ async function handleUserProgress(request, response, url) {
 
   if (!userId || !difficulty) {
     sendJson(response, 400, { error: "Missing userId or difficulty." });
-    return;
-  }
-
-  if (!(await requireUserSession(request, response, userId))) {
     return;
   }
 
@@ -1151,10 +1057,6 @@ async function handleAttempt(request, response) {
 
   if (!userId || !difficulty || !expectedWord) {
     sendJson(response, 400, { error: "Missing userId, difficulty, or expected word." });
-    return;
-  }
-
-  if (!(await requireUserSession(request, response, userId))) {
     return;
   }
 
@@ -1378,10 +1280,6 @@ async function handleChapterReset(request, response) {
     return;
   }
 
-  if (!(await requireUserSession(request, response, userId))) {
-    return;
-  }
-
   if (pool && dbConnected) {
     await pool.query(
       `
@@ -1406,9 +1304,6 @@ async function handleSummary(request, response, url) {
   const userId = Number(url.searchParams.get("userId"));
   const difficulty = String(url.searchParams.get("difficulty") || "");
   const language = normalizeLanguage(url.searchParams.get("language"));
-  if (userId && !(await requireUserSession(request, response, userId))) {
-    return;
-  }
   const chapters = pool && dbConnected && userId
     ? await getDbSummary(userId, difficulty, language)
     : getMemorySummary(userId, difficulty, language);
