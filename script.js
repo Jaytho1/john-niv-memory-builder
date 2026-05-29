@@ -1494,7 +1494,6 @@ function renderLeaderboard() {
             <div class="leaderboard-rank">${copy.rankLabel(row.rank)} · ${levelText}</div>
           </div>
           <div class="leaderboard-score">
-            <strong>${levelText}</strong>
             <span>${row.percent}%</span>
           </div>
         </summary>
