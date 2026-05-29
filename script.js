@@ -1080,6 +1080,12 @@ function renderAuth() {
   elements.userName.textContent = getCopy().notSignedIn;
 }
 
+function scrollToChapterStart() {
+  window.requestAnimationFrame(() => {
+    elements.chapterTitle.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
+}
+
 function renderChapterList() {
   const data = getData();
   if (!data) return;
@@ -1102,6 +1108,7 @@ function renderChapterList() {
     button.addEventListener("click", () => {
       state.selectedChapterId = chapter.id;
       render();
+      scrollToChapterStart();
     });
     elements.chapterList.append(button);
   });
@@ -2202,7 +2209,7 @@ elements.nextChapter.addEventListener("click", () => {
   if (!nextChapter) return;
   state.selectedChapterId = nextChapter.id;
   render();
-  elements.chapterTitle.scrollIntoView({ block: "start", behavior: "smooth" });
+  scrollToChapterStart();
 });
 setupRewardDemo();
 
