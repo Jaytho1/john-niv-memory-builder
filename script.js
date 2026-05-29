@@ -1636,6 +1636,15 @@ function focusInputByKey(focusKey) {
   return false;
 }
 
+function isEnterKeyEvent(event) {
+  return event.key === "Enter" || event.code === "Enter" || event.keyCode === 13 || event.which === 13;
+}
+
+function submitAnswerFromKeyboard(input) {
+  if (input.dataset.isComposing === "true") return;
+  submitAnswer(input, { advanceOnCorrect: true, keepFocusOnIncorrect: true });
+}
+
 function renderPostAttemptPanels() {
   if (!state.currentUser?.id) return;
   renderChapterList();
@@ -1906,6 +1915,7 @@ function refreshPostAttemptData() {
 async function submitAnswer(input, options = {}) {
   if (input.disabled || !state.currentUser?.id || input.dataset.submitting === "true") return;
   const shouldAdvanceOnCorrect = Boolean(options.advanceOnCorrect);
+  const shouldKeepFocusOnIncorrect = Boolean(options.keepFocusOnIncorrect);
   const answer = getSubmittedAnswerForInput(input);
   const expected = input.dataset.answer;
   const chapterId = Number(input.dataset.chapterId);
@@ -1972,7 +1982,7 @@ async function submitAnswer(input, options = {}) {
       setTokenDraft(chapterId, verseId, tokenIndex, "");
       state.pendingFocusKey = null;
       applyProgressToInput(input, meta, progress, input.dataset.displayValue);
-      if (shouldAdvanceOnCorrect) {
+      if (shouldKeepFocusOnIncorrect) {
         focusQuizInput(input);
       }
     }
@@ -2006,6 +2016,7 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   input.type = "text";
   input.className = "quiz-input";
   input.autocomplete = "off";
+  input.enterKeyHint = "done";
   input.spellcheck = false;
   input.style.setProperty("--chars", String(Math.max(blankPrompt.answer.length, 3)));
   input.dataset.answer = blankPrompt.normalizedAnswer;
@@ -2020,12 +2031,15 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   input.dataset.submitting = "false";
   input.setAttribute("aria-label", getCopy().wordAriaLabel(chapterId, verseId));
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
+    if (isEnterKeyEvent(event)) {
       event.preventDefault();
-      if (input.dataset.isComposing !== "true") {
-        submitAnswer(input, { advanceOnCorrect: true });
-      }
+      submitAnswerFromKeyboard(input);
     }
+  });
+  input.addEventListener("beforeinput", (event) => {
+    if (event.inputType !== "insertLineBreak") return;
+    event.preventDefault();
+    submitAnswerFromKeyboard(input);
   });
   input.addEventListener("compositionstart", () => {
     input.dataset.isComposing = "true";
@@ -2037,7 +2051,17 @@ function renderVerseToken(token, chapterId, verseId, tokenIndex, difficulty, ver
   input.addEventListener("input", () => {
     setTokenDraft(chapterId, verseId, tokenIndex, input.value.trim());
   });
-  input.addEventListener("blur", () => submitAnswer(input));
+  input.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      const answer = getSubmittedAnswerForInput(input);
+      const focusMovedToQuizInput = document.activeElement instanceof HTMLInputElement
+        && document.activeElement.classList.contains("quiz-input")
+        && document.activeElement !== input;
+      submitAnswer(input, {
+        keepFocusOnIncorrect: focusMovedToQuizInput && answer !== input.dataset.answer,
+      });
+    }, 0);
+  });
   const meta = createAnswerMeta();
   applyProgressToInput(input, meta, getTokenProgress(chapterId, verseId, tokenIndex), blankPrompt.answer);
 
