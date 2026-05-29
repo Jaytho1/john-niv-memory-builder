@@ -35,7 +35,18 @@ if [[ -f "$APP_DIR/.env" ]]; then
 fi
 
 echo "Checking local app health..."
-curl --fail --silent --show-error "http://127.0.0.1:${APP_PORT}/health" >/dev/null
+for attempt in {1..30}; do
+  if curl --fail --silent --show-error "http://127.0.0.1:${APP_PORT}/health" >/dev/null; then
+    break
+  fi
+
+  if [[ "$attempt" -eq 30 ]]; then
+    echo "Health check failed after $attempt attempts." >&2
+    exit 1
+  fi
+
+  sleep 1
+done
 
 echo "Saving PM2 process list..."
 pm2 save
