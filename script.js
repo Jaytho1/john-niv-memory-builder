@@ -1353,6 +1353,7 @@ function renderLevelsSection() {
   const latestCollectible = getCollectibleType(getLatestCollectibleType());
   const progressColor = latestCollectible?.levelColor || "#4d9f76";
   const isMaxLevel = level.level >= maxCollectionLevel;
+  const progressLevelLabel = isMaxLevel ? copy.maxLevel : copy.currentLevel(level.level);
   elements.levelsSection.innerHTML = `
     <div class="levels-heading">
       <div>
@@ -1362,6 +1363,7 @@ function renderLevelsSection() {
     </div>
     <div class="level-progress">
       <div class="level-progress-copy">
+        <span class="level-progress-level">${escapeHtml(progressLevelLabel)}</span>
         <strong>${isMaxLevel ? "100%" : `${level.percent}%`}</strong>
       </div>
       <div class="level-progress-track">

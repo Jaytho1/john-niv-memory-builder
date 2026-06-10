@@ -12,7 +12,7 @@
   --bad: #9d2f2f;
   --bad-soft: #f8dfdf;
   --shadow: 0 20px 40px rgba(66, 45, 28, 0.08);
-  --quiz-input-max-width: 12rem;
+  --quiz-input-max-width: 9.6rem;
 }
 
 * {
@@ -415,12 +415,8 @@ select {
 }
 
 .quiz-input {
-  width: min(
-    calc(var(--chars, 5) * 0.9rem + 1.5rem),
-    var(--quiz-input-max-width),
-    calc(100vw - 7rem)
-  );
-  min-width: 4rem;
+  width: min(var(--quiz-input-max-width), calc(100vw - 7rem));
+  min-width: min(4rem, calc(100vw - 7rem));
   max-width: 100%;
   padding: 0.46rem 0.58rem;
   border-radius: 10px;
@@ -676,9 +672,16 @@ select {
 
 .level-progress-copy {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
   margin-bottom: 0.4rem;
   color: var(--muted);
+}
+
+.level-progress-level {
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .level-progress-track {
@@ -1553,7 +1556,7 @@ select {
   }
 
   :root {
-    --quiz-input-max-width: 16rem;
+    --quiz-input-max-width: 12.8rem;
   }
 
   .quiz-input {
