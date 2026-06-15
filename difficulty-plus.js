@@ -17,12 +17,12 @@
 
   const plusDifficultyDescriptions = {
     en: {
-      easy_plus: "Easy+ keeps one randomized keyword blank per sentence and never hides Jesus, answered, sir, or you.",
-      medium_plus: "Medium+ hides one to two randomized keywords per sentence and never hides Jesus, answered, sir, or you.",
+      easy_plus: "Easy+ keeps up to one randomized priority keyword blank per sentence and never hides Jesus, answered, sir, or you.",
+      medium_plus: "Medium+ hides up to two non-adjacent randomized priority keywords per sentence and never hides Jesus, answered, sir, or you.",
     },
     ko: {
-      easy_plus: "쉬움+는 문장마다 무작위 핵심 단어 하나를 빈칸으로 남기며 Jesus, answered, sir, you는 숨기지 않습니다.",
-      medium_plus: "보통+은 문장마다 무작위 핵심 단어 하나에서 두 개를 가리며 Jesus, answered, sir, you는 숨기지 않습니다.",
+      easy_plus: "쉬움+는 문장마다 무작위 우선 핵심 단어를 최대 하나 빈칸으로 남기며 Jesus, answered, sir, you는 숨기지 않습니다.",
+      medium_plus: "보통+은 문장마다 서로 붙지 않은 무작위 우선 핵심 단어를 최대 두 개 가리며 Jesus, answered, sir, you는 숨기지 않습니다.",
     },
   };
 
@@ -68,6 +68,32 @@
     return protectedWords.has(token.normalized);
   }
 
+  function isPriorityKeywordToken(token, language) {
+    if (!isKeywordToken(token, language)) {
+      return false;
+    }
+
+    const priorityKeywords = priorityKeywordsByLanguage[language] || new Set();
+    return priorityKeywords.has(token.normalized);
+  }
+
+  function hasOnlySpaceBetweenTokens(tokens, leftIndex, rightIndex) {
+    for (let index = leftIndex + 1; index < rightIndex; index += 1) {
+      if (tokens[index]?.type !== "space") {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function wouldCreateAdjacentBlank(tokens, selectedIndices, candidateIndex) {
+    return selectedIndices.some((selectedIndex) => {
+      const leftIndex = Math.min(selectedIndex, candidateIndex);
+      const rightIndex = Math.max(selectedIndex, candidateIndex);
+      return hasOnlySpaceBetweenTokens(tokens, leftIndex, rightIndex);
+    });
+  }
+
   function insertOptionAfter(select, afterValue, optionValue) {
     if (!(select instanceof HTMLSelectElement) || select.querySelector(`option[value="${optionValue}"]`)) {
       return;
@@ -95,9 +121,6 @@
   function pickPlusIndices(candidateIndices, tokens, difficulty, language) {
     const baseDifficulty = plusDifficultyBaseById[difficulty];
     const limit = getPerSentenceLimit(baseDifficulty, candidateIndices.length);
-    if (candidateIndices.length <= limit) {
-      return candidateIndices;
-    }
 
     const baseHiddenIndices = originalGetHiddenTokenIndexSet(tokens, baseDifficulty, language);
     const seed = getPlusSeed(tokens, difficulty, language);
@@ -107,18 +130,24 @@
       || left - right
     );
 
-    const selected = [...candidateIndices]
+    const preferredCandidates = [...candidateIndices]
       .filter((index) => !baseHiddenIndices.has(index))
-      .sort(randomizedSort)
-      .slice(0, limit);
+      .sort(randomizedSort);
+    const fallbackCandidates = [...candidateIndices]
+      .filter((index) => baseHiddenIndices.has(index))
+      .sort(randomizedSort);
+    const selected = [];
 
-    if (selected.length < limit) {
-      selected.push(
-        ...[...candidateIndices]
-          .filter((index) => !selected.includes(index))
-          .sort(randomizedSort)
-          .slice(0, limit - selected.length)
-      );
+    for (const candidateIndex of [...preferredCandidates, ...fallbackCandidates]) {
+      if (selected.length >= limit) {
+        break;
+      }
+
+      if (difficulty === "medium_plus" && wouldCreateAdjacentBlank(tokens, selected, candidateIndex)) {
+        continue;
+      }
+
+      selected.push(candidateIndex);
     }
 
     return [...new Set(selected)].sort((left, right) => left - right);
@@ -140,7 +169,7 @@
     getSentenceSegments(tokens).forEach((segment) => {
       const candidateIndices = segment.filter((index) => {
         const token = tokens[index];
-        return isKeywordToken(token, language) && !shouldProtectToken(token, language);
+        return isPriorityKeywordToken(token, language) && !shouldProtectToken(token, language);
       });
 
       pickPlusIndices(candidateIndices, tokens, difficulty, language)
