@@ -26,6 +26,7 @@ const publicFiles = new Set([
   "/cross-favicon.png",
   "/styles.css",
   "/script.js",
+  "/difficulty-plus.js",
   "/data/john-quiz-data.js",
   "/data/john-quiz-data-ko.js",
   "/data/john-quiz-data.json",
