@@ -36,7 +36,6 @@ const publicFiles = new Set([
 const memoryAttempts = new Map();
 const memorySolvedWords = new Map();
 const memoryRewards = new Map();
-const memoryRewardAttemptCounts = new Map();
 const memoryUsers = new Map();
 let nextMemoryUserId = 1;
 
@@ -374,9 +373,6 @@ function rememberAttempt(attempt) {
   const current = memoryAttempts.get(key) || [];
   current.push(attempt);
   memoryAttempts.set(key, current);
-
-  const rewardKey = getRewardIdentity(attempt);
-  memoryRewardAttemptCounts.set(rewardKey, (memoryRewardAttemptCounts.get(rewardKey) || 0) + 1);
 }
 
 function rememberSolvedWord(attempt) {
@@ -407,7 +403,7 @@ function rememberReward(attempt) {
 }
 
 function getMemoryAttemptCountForReward(attempt) {
-  return memoryRewardAttemptCounts.get(getRewardIdentity(attempt)) || 0;
+  return (memoryAttempts.get(getAttemptIdentity(attempt)) || []).length;
 }
 
 function buildAttemptStats(correctCount, attemptCount) {
@@ -1093,14 +1089,16 @@ async function handleAttempt(request, response) {
         from word_attempts
         where user_id = $1
           and language = $2
-          and chapter_id = $3
-          and verse_id = $4
-          and token_index = $5
-          and expected_word = $6;
+          and difficulty = $3
+          and chapter_id = $4
+          and verse_id = $5
+          and token_index = $6
+          and expected_word = $7;
       `,
       [
         attempt.userId,
         attempt.language,
+        attempt.difficulty,
         attempt.chapterId,
         attempt.verseId,
         attempt.tokenIndex,
