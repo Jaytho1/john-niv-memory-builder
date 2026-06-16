@@ -2,16 +2,19 @@
   const plusDifficultyBaseById = {
     easy_plus: "easy",
     medium_plus: "medium",
+    hard_plus: "medium",
   };
 
   const plusDifficultyLabels = {
     en: {
       easy_plus: "Easy+",
       medium_plus: "Medium+",
+      hard_plus: "Hard+",
     },
     ko: {
       easy_plus: "쉬움+",
       medium_plus: "보통+",
+      hard_plus: "어려움+",
     },
   };
 
@@ -19,15 +22,33 @@
     en: {
       easy_plus: "Easy+ keeps up to one randomized priority keyword blank per sentence and never hides Jesus, answered, sir, or you.",
       medium_plus: "Medium+ hides up to two non-adjacent randomized priority keywords per sentence and never hides Jesus, answered, sir, or you.",
+      hard_plus: "Hard+ uses Medium+ rules with about 30% more non-adjacent priority blanks.",
     },
     ko: {
       easy_plus: "쉬움+는 문장마다 무작위 우선 핵심 단어를 최대 하나 빈칸으로 남기며 Jesus, answered, sir, you는 숨기지 않습니다.",
       medium_plus: "보통+은 문장마다 서로 붙지 않은 무작위 우선 핵심 단어를 최대 두 개 가리며 Jesus, answered, sir, you는 숨기지 않습니다.",
+      hard_plus: "어려움+은 보통+ 규칙을 사용하되 서로 붙지 않은 우선 핵심 빈칸을 약 30% 더 가립니다.",
     },
   };
 
   const protectedWordsByLanguage = {
     en: new Set(["jesus", "answered", "sir", "you"]),
+    ko: new Set(),
+  };
+
+  const plusBlockedWordsByLanguage = {
+    en: new Set(["for", "had", "however", "see", "since", "therefore", "yet"]),
+    ko: new Set(),
+  };
+
+  const plusPriorityAdditionsByLanguage = {
+    en: new Set([
+      "aloes", "answer", "baptize", "baptized", "baptizing", "blessing",
+      "blind", "branches", "confess", "desert", "dwelling", "false", "flesh",
+      "garden", "gate", "linen", "magdalene", "malchus", "myrrh", "nicodemus",
+      "official", "one", "own", "receive", "received", "servant", "soldiers",
+      "surpassed", "thongs", "tomb", "wedding", "wine",
+    ]),
     ko: new Set(),
   };
 
@@ -73,8 +94,23 @@
       return false;
     }
 
+    const blockedWords = plusBlockedWordsByLanguage[language] || new Set();
+    if (blockedWords.has(token.normalized)) {
+      return false;
+    }
+
     const priorityKeywords = priorityKeywordsByLanguage[language] || new Set();
-    return priorityKeywords.has(token.normalized);
+    const plusPriorityAdditions = plusPriorityAdditionsByLanguage[language] || new Set();
+    return priorityKeywords.has(token.normalized) || plusPriorityAdditions.has(token.normalized);
+  }
+
+  function isFallbackPlusKeywordToken(token, language) {
+    if (!isKeywordToken(token, language)) {
+      return false;
+    }
+
+    const blockedWords = plusBlockedWordsByLanguage[language] || new Set();
+    return !blockedWords.has(token.normalized);
   }
 
   function hasOnlySpaceBetweenTokens(tokens, leftIndex, rightIndex) {
@@ -116,6 +152,11 @@
     const select = document.querySelector("#difficulty-select");
     insertOptionAfter(select, "easy", "easy_plus");
     insertOptionAfter(select, "medium", "medium_plus");
+    insertOptionAfter(select, "medium_plus", "hard_plus");
+  }
+
+  function shouldAvoidAdjacentBlanks(difficulty) {
+    return difficulty === "medium_plus" || difficulty === "hard_plus";
   }
 
   function pickPlusIndices(candidateIndices, tokens, difficulty, language) {
@@ -143,7 +184,7 @@
         break;
       }
 
-      if (difficulty === "medium_plus" && wouldCreateAdjacentBlank(tokens, selected, candidateIndex)) {
+      if (shouldAvoidAdjacentBlanks(difficulty) && wouldCreateAdjacentBlank(tokens, selected, candidateIndex)) {
         continue;
       }
 
@@ -151,6 +192,51 @@
     }
 
     return [...new Set(selected)].sort((left, right) => left - right);
+  }
+
+  function pickAdditionalPlusIndices(candidateIndices, tokens, difficulty, language, selectedIndices, targetCount) {
+    if (selectedIndices.length >= targetCount) {
+      return selectedIndices;
+    }
+
+    const selected = [...selectedIndices];
+    const seed = getPlusSeed(tokens, difficulty, language);
+    const randomizedSort = (left, right) => (
+      hashString(`${seed}:extra:${left}`) - hashString(`${seed}:extra:${right}`)
+      || scoreTokenForDifficulty(tokens[right], language) - scoreTokenForDifficulty(tokens[left], language)
+      || left - right
+    );
+
+    for (const candidateIndex of [...candidateIndices].sort(randomizedSort)) {
+      if (selected.length >= targetCount) {
+        break;
+      }
+
+      if (selected.includes(candidateIndex)) {
+        continue;
+      }
+
+      if (shouldAvoidAdjacentBlanks(difficulty) && wouldCreateAdjacentBlank(tokens, selected, candidateIndex)) {
+        continue;
+      }
+
+      selected.push(candidateIndex);
+    }
+
+    return selected.sort((left, right) => left - right);
+  }
+
+  function getHardPlusTargetCount(tokens, selectedCount, candidateCount, difficulty, language) {
+    if (difficulty !== "hard_plus" || selectedCount <= 0) {
+      return selectedCount;
+    }
+
+    const exactExtraCount = selectedCount * 0.3;
+    const guaranteedExtraCount = Math.floor(exactExtraCount);
+    const fractionalExtraCount = exactExtraCount - guaranteedExtraCount;
+    const fractionalRoll = hashString(`${getPlusSeed(tokens, difficulty, language)}:thirty-percent`) / 0x100000000;
+    const extraCount = guaranteedExtraCount + (fractionalRoll < fractionalExtraCount ? 1 : 0);
+    return Math.min(candidateCount, selectedCount + extraCount);
   }
 
   function getPlusHiddenTokenIndexSet(tokens, difficulty, language = getCurrentLanguage()) {
@@ -166,15 +252,41 @@
     }
 
     const hiddenIndices = new Set();
+    const allCandidateIndices = [];
     getSentenceSegments(tokens).forEach((segment) => {
       const candidateIndices = segment.filter((index) => {
         const token = tokens[index];
         return isPriorityKeywordToken(token, language) && !shouldProtectToken(token, language);
       });
+      allCandidateIndices.push(...candidateIndices);
 
       pickPlusIndices(candidateIndices, tokens, difficulty, language)
         .forEach((index) => hiddenIndices.add(index));
     });
+
+    const selectedIndices = [...hiddenIndices];
+    const fallbackCandidateIndices = getSentenceSegments(tokens)
+      .flatMap((segment) => segment.filter((index) => {
+        const token = tokens[index];
+        return isFallbackPlusKeywordToken(token, language) && !shouldProtectToken(token, language);
+      }));
+    const minimumCandidateIndices = allCandidateIndices.length ? allCandidateIndices : fallbackCandidateIndices;
+    if (!selectedIndices.length && minimumCandidateIndices.length) {
+      pickAdditionalPlusIndices(minimumCandidateIndices, tokens, difficulty, language, selectedIndices, 1)
+        .forEach((index) => hiddenIndices.add(index));
+    }
+
+    if (difficulty === "hard_plus" && fallbackCandidateIndices.length) {
+      const targetCount = getHardPlusTargetCount(
+        tokens,
+        hiddenIndices.size,
+        fallbackCandidateIndices.length,
+        difficulty,
+        language
+      );
+      pickAdditionalPlusIndices(fallbackCandidateIndices, tokens, difficulty, language, [...hiddenIndices], targetCount)
+        .forEach((index) => hiddenIndices.add(index));
+    }
 
     tokenCache.set(cacheKey, hiddenIndices);
     return hiddenIndices;
