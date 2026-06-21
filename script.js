@@ -888,6 +888,10 @@ function shouldHideToken(tokens, tokenIndex, difficulty, language = state.curren
   return getHiddenTokenIndexSet(tokens, difficulty, language).has(tokenIndex);
 }
 
+function getOrderedHiddenTokenIndices(tokens, difficulty, language = state.currentLanguage) {
+  return [...getHiddenTokenIndexSet(tokens, difficulty, language)].sort((left, right) => left - right);
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: {
@@ -1841,7 +1845,7 @@ function findNextUnsolvedFocusKey(chapterId, verseId, tokenIndex) {
   let nextFocusKey = null;
 
   for (const verse of chapter.verses) {
-    for (const currentTokenIndex of getHiddenTokenIndexSet(verse.tokens, difficulty)) {
+    for (const currentTokenIndex of getOrderedHiddenTokenIndices(verse.tokens, difficulty)) {
       if (!passedCurrent) {
         if (verse.id === verseId && currentTokenIndex === tokenIndex && chapter.id === chapterId) {
           passedCurrent = true;
